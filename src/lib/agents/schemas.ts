@@ -294,3 +294,32 @@ export function toInputSchema(schema: z.ZodType): { type: "object"; [k: string]:
 export function formatZodError(e: z.ZodError): string {
   return e.issues.slice(0, 15).map((i) => `- ${i.path.join(".") || "(raíz)"}: ${i.message}`).join("\n");
 }
+
+/**
+ * Submit-tool name → validation schema. Shared by the in-process tool loop and
+ * the MCP server used with Claude Code, so both validate exactly the same way.
+ */
+export function submitSchema(name: string, role: AgentRole): z.ZodType | null {
+  switch (name) {
+    case "submit_initial_report":
+      return initialReportSchema(role);
+    case "submit_cross_review":
+      return CrossReviewSchema;
+    case "submit_debate_turn":
+      return DebateTurnSchema;
+    case "submit_cio_turn":
+      return CioTurnSchema;
+    case "submit_verification":
+      return VerificationSchema;
+    case "submit_revision":
+      return revisionSchema(role);
+    case "submit_selective_agenda":
+      return SelectiveAgendaSchema;
+    case "submit_selective_answer":
+      return selectiveAnswerSchema(role);
+    case "submit_final_decision":
+      return FinalDecisionSchema;
+    default:
+      return null;
+  }
+}

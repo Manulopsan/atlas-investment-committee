@@ -278,6 +278,7 @@ const MIGRATIONS: string[] = [
   "ALTER TABLE sessions ADD COLUMN run_requested INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE sessions ADD COLUMN lease_owner TEXT",
   "ALTER TABLE sessions ADD COLUMN lease_until TEXT",
+  "ALTER TABLE ai_usage ADD COLUMN turns INTEGER NOT NULL DEFAULT 1",
 ];
 
 function migrate(db: DatabaseSync) {

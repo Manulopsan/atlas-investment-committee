@@ -13,6 +13,7 @@ import {
   type SessionRow,
 } from "../db/repo";
 import { AnthropicAdapter } from "../llm/anthropic";
+import { ClaudeCodeAdapter } from "../llm/claudeCode";
 import { ScriptedAdapter } from "../llm/scripted";
 import type { ModelAdapter } from "../llm/adapter";
 import { createMarketData } from "../market-data";
@@ -47,6 +48,7 @@ export function buildDeps(s: SessionRow, signal?: AbortSignal): RunnerDeps {
   if (s.mode === "demo") return { adapter: new ScriptedAdapter(), md: { ...syntheticMarketData(), asOf: s.config.asOfDate ?? null }, settings: s.settings, signal };
   const md = createMarketData(s.mode, s.settings, { userPrices: s.config.userPrices });
   if (s.mode === "dry_run") return { adapter: new NoCallAdapter(), md, settings: s.settings, signal };
+  if (s.settings.provider === "claude_code") return { adapter: new ClaudeCodeAdapter(s.settings), md, settings: s.settings, signal };
   if (!process.env.ANTHROPIC_API_KEY?.trim()) throw new StartError("ANTHROPIC_API_KEY no está configurada en el servidor");
   return { adapter: new AnthropicAdapter({ refusalFallback: s.settings.refusalFallback }), md, settings: s.settings, signal };
 }
@@ -89,7 +91,7 @@ export function startSession(id: string): void {
   const s = getSession(id);
   if (!s) throw new StartError("Sesión no encontrada");
   if (TERMINAL_STATUSES.includes(s.status)) return;
-  if (s.mode === "live" && !process.env.ANTHROPIC_API_KEY?.trim() && runnerMode() === "inprocess") throw new StartError("ANTHROPIC_API_KEY no está configurada en el servidor");
+  if (s.mode === "live" && s.settings.provider === "anthropic_api" && !process.env.ANTHROPIC_API_KEY?.trim() && runnerMode() === "inprocess") throw new StartError("ANTHROPIC_API_KEY no está configurada en el servidor");
   requestRun(id, true);
   if (runnerMode() === "worker" || local.has(id)) return; // the worker picks it up
   const p = runWithLease(id, ownerId("web")).finally(() => local.delete(id));
@@ -110,7 +112,7 @@ export function resumeSession(id: string) {
   const s = getSession(id);
   if (!s || TERMINAL_STATUSES.includes(s.status)) throw new StartError("La sesión no se puede reanudar");
   if (leaseActive(s)) return;
-  if (s.mode === "live" && !process.env.ANTHROPIC_API_KEY?.trim() && runnerMode() === "inprocess") throw new StartError("ANTHROPIC_API_KEY no está configurada en el servidor");
+  if (s.mode === "live" && s.settings.provider === "anthropic_api" && !process.env.ANTHROPIC_API_KEY?.trim() && runnerMode() === "inprocess") throw new StartError("ANTHROPIC_API_KEY no está configurada en el servidor");
   prepareResume(id);
   startSession(id);
 }

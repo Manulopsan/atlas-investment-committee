@@ -847,6 +847,7 @@ export interface UsageRow {
   taskKey: string | null;
   ticker: string | null;
   inputEstimateBasis: string | null;
+  turns: number;
   agentRole: AgentRole | null;
   phase: string | null;
   model: string;
@@ -861,10 +862,11 @@ export interface UsageRow {
   createdAt: string;
 }
 
-export function insertUsage(sessionId: string, u: Omit<UsageRow, "createdAt" | "ticker" | "inputEstimateBasis"> & { ticker?: string | null; inputEstimateBasis?: string | null }) {
+export function insertUsage(sessionId: string, u: Omit<UsageRow, "createdAt" | "ticker" | "inputEstimateBasis" | "turns"> & { ticker?: string | null; inputEstimateBasis?: string | null; turns?: number }) {
   run(
-    "INSERT INTO ai_usage (session_id, task_key, ticker, input_estimate_basis, agent_role, phase, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, est_cost_usd, cost_basis, stop_reason, request_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    "INSERT INTO ai_usage (session_id, turns, task_key, ticker, input_estimate_basis, agent_role, phase, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, est_cost_usd, cost_basis, stop_reason, request_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
     sessionId,
+    Math.max(1, u.turns ?? 1),
     u.taskKey,
     u.ticker ?? null,
     u.inputEstimateBasis ?? null,
@@ -888,6 +890,7 @@ export function listUsage(sessionId: string): UsageRow[] {
     taskKey: (r.task_key as string) ?? null,
     ticker: (r.ticker as string) ?? null,
     inputEstimateBasis: (r.input_estimate_basis as string) ?? null,
+    turns: Number(r.turns ?? 1),
     agentRole: (r.agent_role as AgentRole) ?? null,
     phase: (r.phase as string) ?? null,
     model: r.model as string,
@@ -905,7 +908,7 @@ export function listUsage(sessionId: string): UsageRow[] {
 
 export function usageTotals(sessionId: string) {
   const r = get(
-    "SELECT COUNT(*) AS calls, COALESCE(SUM(input_tokens),0) AS inp, COALESCE(SUM(output_tokens),0) AS outp, COALESCE(SUM(cache_read_tokens),0) AS cr, COALESCE(SUM(cache_write_tokens),0) AS cw, COALESCE(SUM(est_cost_usd),0) AS cost FROM ai_usage WHERE session_id = ?",
+    "SELECT COALESCE(SUM(turns),0) AS calls, COALESCE(SUM(input_tokens),0) AS inp, COALESCE(SUM(output_tokens),0) AS outp, COALESCE(SUM(cache_read_tokens),0) AS cr, COALESCE(SUM(cache_write_tokens),0) AS cw, COALESCE(SUM(est_cost_usd),0) AS cost FROM ai_usage WHERE session_id = ?",
     sessionId,
   )!;
   return {

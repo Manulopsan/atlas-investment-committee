@@ -3,10 +3,9 @@ import type { AppSettings } from "../config";
 import { insertUsage, setTaskProgress } from "../db/repo";
 import { formatZodError, toInputSchema } from "../agents/schemas";
 import { PROFILES } from "../agents/profiles";
-import { ModelRefusalError, type MessageParam, type ModelAdapter, type ToolUnion } from "../llm/adapter";
+import { ModelRefusalError, type MessageParam, type ModelAdapter, type TaskRunSpec, type ToolUnion } from "../llm/adapter";
 import { checkBudget, costOf, COST_BASIS, estimateTokens, priceFor, StopRequestedError } from "../llm/cost";
 import type { MarketData } from "../market-data/types";
-import type { AgentRole } from "../types";
 import { runTool, toolDefinitions, webSearchTool } from "./tools";
 import type Anthropic from "@anthropic-ai/sdk";
 
@@ -19,20 +18,8 @@ export interface OrchestratorDeps {
   isStopRequested: () => boolean;
 }
 
-export interface AgentTaskSpec<S extends z.ZodType> {
-  sessionId: string;
-  taskKey: string;
-  phase: string;
-  role: AgentRole;
-  model: string;
-  prompt: string;
-  dataTools: string[];
+export interface AgentTaskSpec<S extends z.ZodType> extends TaskRunSpec {
   submit: { name: string; description: string; schema: S };
-  maxIterations: number;
-  isFinal?: boolean;
-  round1?: boolean;
-  /** Company this task is about (null for multi-company tasks) — used for per-company cost. */
-  ticker?: string | null;
 }
 
 export class AgentOutputError extends Error {
@@ -49,6 +36,13 @@ export class AgentOutputError extends Error {
  * budget-checked beforehand and its usage recorded afterwards.
  */
 export async function runAgentTask<S extends z.ZodType>(spec: AgentTaskSpec<S>, deps: OrchestratorDeps): Promise<{ output: z.infer<S>; model: string; iterations: number }> {
+  if (deps.adapter.runTask) {
+    // Provider runs its own agent loop (Claude Code). The output is re-validated here.
+    const r = await deps.adapter.runTask(spec, { signal: deps.signal, isStopRequested: deps.isStopRequested });
+    const parsed = spec.submit.schema.safeParse(r.output);
+    if (!parsed.success) throw new AgentOutputError(`Resultado inválido del agente ${spec.role}: ${formatZodError(parsed.error)}`);
+    return { output: parsed.data, model: r.model, iterations: r.iterations };
+  }
   const profile = PROFILES[spec.role];
   const L = deps.settings.limits;
   const submitTool: ToolUnion = { name: spec.submit.name, description: spec.submit.description, input_schema: toInputSchema(spec.submit.schema) };

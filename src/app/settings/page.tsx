@@ -5,6 +5,7 @@ import { Badge, Button, Card, ErrorBox, Notice } from "@/components/ui";
 import { SECTOR_EXCLUSIONS, type AppSettings } from "@/lib/config";
 
 interface Env {
+  claudeCode: { available: boolean; loggedIn: boolean; usesApiKey: boolean; version: string | null; error: string | null };
   anthropicKeyConfigured: boolean;
   secUserAgentConfigured: boolean;
   alphaVantageKeyConfigured: boolean;
@@ -82,8 +83,28 @@ export default function SettingsPage() {
       <div className="grid gap-4 lg:grid-cols-2">
         <Card title="Modelo y clave (servidor)">
           <div className="space-y-3">
+            <Field label="Proveedor de IA" hint="Suscripción: usa su sesión de Claude Code (Pro/Max) sin cargo por token, consumiendo los límites de uso del plan. API: pago por token con ANTHROPIC_API_KEY.">
+              <select className={input} value={s.provider} onChange={(e) => up((d) => void (d.provider = e.target.value as AppSettings["provider"]))}>
+                <option value="claude_code">Suscripción de Claude (vía Claude Code CLI)</option>
+                <option value="anthropic_api">API de Anthropic (pago por token)</option>
+              </select>
+            </Field>
+            {s.provider === "claude_code" && (
+              <div className="space-y-2 rounded-md border border-line p-3 text-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  Claude Code: {env?.claudeCode.available ? <Badge tone="good">{env.claudeCode.version}</Badge> : <Badge tone="serious">no encontrado</Badge>}
+                  {env?.claudeCode.available && (env.claudeCode.loggedIn && !env.claudeCode.usesApiKey ? <Badge tone="good">sesión de suscripción iniciada</Badge> : <Badge tone="serious">sin sesión de suscripción</Badge>)}
+                </div>
+                {env?.claudeCode.error && <p className="text-xs text-ink-2">{env.claudeCode.error}</p>}
+                <p className="text-xs text-ink-2">Instalación: <code>npm install -g @anthropic-ai/claude-code</code> y después <code>claude auth login</code> con su cuenta de Claude. Para el worker sin navegador puede usar <code>claude setup-token</code>. La app quita <code>ANTHROPIC_API_KEY</code> del entorno de Claude Code para que nunca facture por API.</p>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Ejecutable de Claude Code"><input className={input} value={s.claudeCodePath} onChange={(e) => up((d) => void (d.claudeCodePath = e.target.value))} /></Field>
+                  <Field label="Tiempo máx. por tarea (min)"><Num value={s.taskTimeoutMinutes} min={1} max={120} onChange={(n) => up((d) => void (d.taskTimeoutMinutes = n))} /></Field>
+                </div>
+              </div>
+            )}
             <div className="flex flex-wrap gap-2 text-sm">
-              API key: {env?.anthropicKeyConfigured ? <Badge tone="good">configurada en el servidor</Badge> : <Badge tone="serious">no configurada</Badge>}
+              API key{s.provider === "claude_code" ? " (no necesaria con suscripción)" : ""}: {env?.anthropicKeyConfigured ? <Badge tone="good">configurada en el servidor</Badge> : <Badge tone="serious">no configurada</Badge>}
               SEC User-Agent: {env?.secUserAgentConfigured ? <Badge tone="good">configurado</Badge> : <Badge tone="serious">no configurado</Badge>}
               Alpha Vantage: {env?.alphaVantageKeyConfigured ? <Badge tone="good">configurada</Badge> : <Badge>opcional</Badge>}
             </div>
@@ -103,8 +124,8 @@ export default function SettingsPage() {
         </Card>
         <Card title="Presupuesto y límites">
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Presupuesto máx. por sesión (USD)"><Num value={L.maxBudgetUsd} step={0.5} min={0} onChange={(n) => up((d) => void (d.limits.maxBudgetUsd = n))} /></Field>
-            <Field label="Llamadas máx. por sesión"><Num value={L.maxCallsPerSession} min={1} onChange={(n) => up((d) => void (d.limits.maxCallsPerSession = n))} /></Field>
+            <Field label="Presupuesto máx. por sesión (USD)" hint={s.provider === "claude_code" ? "Solo aplica al modo API. Con suscripción el límite efectivo es el de turnos." : undefined}><Num value={L.maxBudgetUsd} step={0.5} min={0} onChange={(n) => up((d) => void (d.limits.maxBudgetUsd = n))} /></Field>
+            <Field label="Llamadas / turnos máx. por sesión" hint="Con suscripción cuenta los turnos del modelo de cada agente."><Num value={L.maxCallsPerSession} min={1} onChange={(n) => up((d) => void (d.limits.maxCallsPerSession = n))} /></Field>
             <Field label="Tokens de entrada máx. por llamada"><Num value={L.maxInputTokensPerCall} step={1000} onChange={(n) => up((d) => void (d.limits.maxInputTokensPerCall = n))} /></Field>
             <Field label="Tokens de salida máx. por llamada"><Num value={L.maxOutputTokensPerCall} step={1000} onChange={(n) => up((d) => void (d.limits.maxOutputTokensPerCall = n))} /></Field>
             <Field label="Rondas completas de debate (1–2)"><Num value={L.maxDebateRounds} min={1} max={2} onChange={(n) => up((d) => void (d.limits.maxDebateRounds = n))} /></Field>

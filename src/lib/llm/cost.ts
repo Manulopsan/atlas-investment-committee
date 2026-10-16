@@ -94,6 +94,9 @@ export function usageBreakdown(sessionId: string) {
 }
 
 export interface PlanEstimate {
+  provider: "claude_code" | "anthropic_api";
+  /** true: no per-token billing (Claude subscription); cost figures are API-equivalent only. */
+  subscription: boolean;
   model: string;
   debateModel: string;
   agents: number;
@@ -143,10 +146,16 @@ export function planEstimate(settings: AppSettings, nCandidates: number): PlanEs
     "Estimación aproximada: el coste real depende de los tokens efectivamente usados, del número de llamadas a herramientas y de la caché.",
     "La aplicación detiene nuevas llamadas antes de superar el presupuesto o el límite de llamadas.",
   ];
-  if (!priceFor(settings, settings.model) || !priceFor(settings, settings.debateModel)) warnings.push("Falta el precio de algún modelo seleccionado en la tabla de precios: no se puede estimar el coste.");
+  const subscription = settings.provider === "claude_code";
+  if (subscription) {
+    warnings.unshift("Modo suscripción (Claude Code): no hay cargo por token; la sesión consume los límites de uso de su plan (ventanas de 5 horas y semanales). El importe mostrado es solo el equivalente orientativo en API.");
+    warnings.push("Si se alcanza el límite del plan, la sesión se pausa y puede reanudarse cuando se restablezca, sin repetir tareas completadas.");
+  } else if (!priceFor(settings, settings.model) || !priceFor(settings, settings.debateModel)) warnings.push("Falta el precio de algún modelo seleccionado en la tabla de precios: no se puede estimar el coste.");
   if (totalCalls > L.maxCallsPerSession) warnings.push(`Las llamadas previstas (${totalCalls}) superan el límite (${L.maxCallsPerSession}): el debate se detendrá de forma controlada.`);
   if (cost !== null && cost > L.maxBudgetUsd) warnings.push(`El coste estimado supera el presupuesto: el debate se detendrá de forma controlada al llegar al límite.`);
   return {
+    provider: settings.provider,
+    subscription,
     model: settings.model,
     debateModel: settings.debateModel,
     agents: 4,
@@ -158,7 +167,7 @@ export function planEstimate(settings: AppSettings, nCandidates: number): PlanEs
     estCostUsd: cost,
     budgetUsd: L.maxBudgetUsd,
     maxCalls: L.maxCallsPerSession,
-    withinBudget: cost === null ? null : cost <= L.maxBudgetUsd && totalCalls <= L.maxCallsPerSession,
+    withinBudget: subscription ? totalCalls <= L.maxCallsPerSession : cost === null ? null : cost <= L.maxBudgetUsd && totalCalls <= L.maxCallsPerSession,
     warnings,
   };
 }

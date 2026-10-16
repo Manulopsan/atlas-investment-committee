@@ -29,6 +29,27 @@ Comité de inversión autónomo de **cuatro agentes de IA** (Quality, Valuation,
 | **Persistencia y reanudación** | SQLite (`node:sqlite`, sin dependencias nativas). Las tareas completadas nunca se repiten; las que quedaron `RUNNING` tras un cierre se re-encolan. Los efectos de cada tarea se aplican en una transacción junto con su marca de éxito. |
 | **Exportación** | Informe final (Markdown), tabla comparativa (CSV), informes por agente, transcripción del debate, evidencias y fuentes, historial de puntuaciones; todas con fecha de corte, modelo, fuentes, limitaciones, estado de verificación y advertencia. Redacción de secretos. |
 
+## Usar su suscripción de Claude (sin créditos de API)
+
+Por defecto los agentes se ejecutan con **su suscripción de Claude (Pro/Max) a través de Claude Code**, no con una API key:
+
+```bash
+npm install -g @anthropic-ai/claude-code   # si aún no lo tiene
+claude auth login                          # inicie sesión con su cuenta de Claude
+npm run check:claude                       # comprueba la conexión con una tarea mínima (Haiku, datos sintéticos)
+```
+
+Cómo funciona: cada tarea de cada agente se ejecuta como un proceso `claude -p` independiente y sin persistencia, con la instrucción de sistema del agente, **todas las herramientas integradas desactivadas** (sin terminal ni acceso a ficheros) y solo el servidor MCP de ATLAS (`scripts/mcp-atlas.ts`) con las herramientas autorizadas para esa fase y su herramienta de entrega validada con Zod. La independencia de la ronda 1, el registro de evidencias y la validación son los mismos que en modo API. La app elimina `ANTHROPIC_API_KEY` del entorno de Claude Code para que nunca facture por API.
+
+Qué implica:
+- **No hay cargo por token**, pero cada sesión **consume los límites de uso de su plan** (ventana de 5 horas y límite semanal). Un comité completo con Opus puede usar una parte importante de esos límites, sobre todo con un plan Pro; para pruebas, reduzca candidatas/empresas en debate o use un modelo más ligero para el debate.
+- El límite que controla la app es el de **turnos del modelo** por sesión (Settings → límites). El importe en dólares que verá es solo el *equivalente API* orientativo que informa Claude Code.
+- Si se alcanza el límite del plan, la sesión **se pausa** y puede reanudarla cuando se restablezca, sin repetir tareas completadas.
+- Para el worker sin navegador puede usar `claude setup-token` (token de larga duración de su suscripción).
+- Es una herramienta para uso personal con su propia cuenta: no la ofrezca a terceros con su inicio de sesión.
+
+El modo **API de Anthropic** (pago por token con `ANTHROPIC_API_KEY`, presupuesto en USD y `count_tokens`) sigue disponible en Settings.
+
 ## Novedades v2
 
 | Mejora | Qué hace | Dónde |
@@ -90,7 +111,9 @@ src/
   middleware.ts                # Autenticación básica opcional (v2)
 scripts/worker.ts  scripts/eval.ts
 evals/cases.example.json
-tests/                         # 88 pruebas (Vitest)
+scripts/mcp-atlas.ts           # Servidor MCP de herramientas para Claude Code (suscripción)
+scripts/check-claude-code.ts   # npm run check:claude
+tests/                         # 96 pruebas (Vitest)
 docs/screenshots/              # Capturas de una sesión DEMO (datos sintéticos)
 ```
 
@@ -117,7 +140,8 @@ La base de datos se crea en `./data/atlas.db` (configurable con `ATLAS_DB_PATH`)
 
 | Variable | Obligatoria | Uso |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | Para el modo real | Clave de la API de Anthropic. Nunca llega al navegador, ni a SQLite, logs o exportaciones. |
+| — (Claude Code con sesión iniciada) | Para el modo real con suscripción (por defecto) | `claude auth login`; no requiere variables. |
+| `ANTHROPIC_API_KEY` | Solo para el proveedor "API de Anthropic" | Clave de la API (pago por token). Nunca llega al navegador, ni a SQLite, logs o exportaciones, ni a Claude Code. |
 | `SEC_USER_AGENT` | Para datos reales | La SEC exige un User-Agent con contacto, p. ej. `Atlas Research tu@email.com`. |
 | `ALPHAVANTAGE_API_KEY` | No | Proveedor de precios alternativo (plan gratuito). La URL guardada se redacta. |
 | `ATLAS_DB_PATH` | No | Ruta del fichero SQLite. |
@@ -156,7 +180,7 @@ Opcional: en Settings → *Universo* importe tickers por CSV (`ticker[,precio,fe
 ## 8. Resultado real de las comprobaciones (en este entorno)
 
 ```
-npm test           → Test Files 8 passed (8) · Tests 88 passed (88)
+npm test           → Test Files 9 passed (9) · Tests 96 passed (96)
 npm run typecheck  → sin errores
 npm run lint       → sin errores ni avisos
 npm run build      → compilación de producción correcta (Next.js 15.5)
@@ -165,6 +189,8 @@ npm run build      → compilación de producción correcta (Next.js 15.5)
 Las pruebas cubren los 15 requisitos: perfiles distintos (1), prompts de ronda 1 sin contenido ajeno y broker que deniega la lectura (2–3), debate bloqueado hasta 4 informes (4), mensajes persistidos y filtrables (5), objeciones → incidencias resueltas solo con evidencia (6), informes congelados inmutables y revisiones versionadas (7), matemáticas financieras (8), cifras sin fuente nunca verificadas + `verify_source` + guardia SSRF (9), límites de coste que detienen llamadas y parada controlada (10), errores sin pérdida de resultados y reintento individual (11), ranking con <5 y 0 empresas (12), exportaciones con cabecera y sin secretos (13), datos sintéticos aislados y sin tickers reales codificados en la UI (14), reanudación sin duplicar tareas (15), además de un flujo completo de extremo a extremo.
 
 Pruebas de la v2: conciliación de cifras, lector de secciones del 10-K (índice frente a sección real, párrafo y página), históricos de precios (Stooq, Alpha Vantage, BCE), múltiplos históricos y comparables, modo histórico (reexpresiones posteriores excluidas, precio a la fecha), *leases* del worker, firma de cambios del SSE, uso de `count_tokens` en el chequeo de presupuesto, arnés de evaluación completo y autenticación básica.
+
+Verificación con la suscripción: `npm run check:claude` ejecutó de verdad una tarea de agente con Claude Code autenticado por suscripción (sin API key): el modelo llamó a la herramienta MCP de ATLAS, citó la evidencia `EV-1` y entregó un resultado que pasó la validación (3 turnos, ~10–19 s). No se ha ejecutado aún un comité completo con datos reales (la red de este entorno bloquea la SEC).
 
 Verificaciones manuales hechas (v2): web en modo `worker` encolando una sesión, `npm run worker` ejecutándola hasta COMPLETED, flujo SSE emitiendo eventos, `npm run eval -- --demo` completo y `npm run eval -- --file …` deteniéndose en la estimación sin `--confirm-cost`.
 

@@ -86,6 +86,17 @@ export const DEFAULT_PRICING: Record<string, ModelPrice> = {
 };
 
 export const AppSettingsSchema = z.object({
+  /**
+   * How agents reach Claude:
+   * - "claude_code": through the local Claude Code CLI signed in with your Claude
+   *   subscription (Pro/Max). No per-token billing; consumes your plan's usage limits.
+   * - "anthropic_api": Anthropic API key (pay per token).
+   */
+  provider: z.enum(["claude_code", "anthropic_api"]).default("claude_code"),
+  /** Path or name of the Claude Code executable. */
+  claudeCodePath: z.string().min(1).default("claude"),
+  /** Hard timeout for one agent task run through Claude Code. */
+  taskTimeoutMinutes: z.number().int().min(1).max(120).default(20),
   /** Main model: initial reports, revisions, CIO decisions. */
   model: z.string().min(1).default("claude-opus-5-5"),
   /** Model for debate turns and verification tasks (the "quality" knob). */

@@ -12,6 +12,7 @@ interface EnvStatus {
   anthropicKeyConfigured: boolean;
   secUserAgentConfigured: boolean;
   alphaVantageKeyConfigured: boolean;
+  claudeCode: { available: boolean; loggedIn: boolean; usesApiKey: boolean; version: string | null; error: string | null };
 }
 
 function StartPanel({ onStarted }: { onStarted: (id: string) => void }) {
@@ -37,7 +38,9 @@ function StartPanel({ onStarted }: { onStarted: (id: string) => void }) {
       setBusy(false);
     }
   };
-  const keyMissing = cfg && !cfg.env.anthropicKeyConfigured;
+  const sub = cfg?.settings.provider === "claude_code";
+  const keyMissing = cfg && !sub && !cfg.env.anthropicKeyConfigured;
+  const ccProblem = cfg && sub && (!cfg.env.claudeCode.available || !cfg.env.claudeCode.loggedIn || cfg.env.claudeCode.usesApiKey) ? cfg.env.claudeCode.error ?? "Claude Code no disponible" : null;
   return (
     <Card title="Iniciar comité">
       <div className="grid gap-4 lg:grid-cols-2">
@@ -47,7 +50,7 @@ function StartPanel({ onStarted }: { onStarted: (id: string) => void }) {
             {[
               { v: "demo", t: "Demostración", d: "Datos y agentes SINTÉTICOS claramente etiquetados. Sin coste, sin red. Ejecuta el flujo completo." },
               { v: "dry_run", t: "Análisis en seco", d: "Sin llamadas de IA: comprueba configuración y fuentes (SEC), descubre candidatas y estima el coste." },
-              { v: "live", t: "Comité real", d: "Llamadas de pago a la API de Anthropic con datos públicos reales. Requiere clave y consentimiento." },
+              { v: "live", t: "Comité real", d: sub ? "Agentes reales con su suscripción de Claude (vía Claude Code), sin cargo por token, y datos públicos reales. Consume los límites de uso de su plan." : "Llamadas de pago a la API de Anthropic con datos públicos reales. Requiere clave y consentimiento." },
             ].map((o) => (
               <label key={o.v} className={`flex cursor-pointer gap-2 rounded-md border p-2.5 ${mode === o.v ? "border-accent bg-accent/10" : "border-line"}`}>
                 <input type="radio" name="mode" checked={mode === o.v} onChange={() => setMode(o.v as typeof mode)} className="mt-1" />
@@ -58,6 +61,13 @@ function StartPanel({ onStarted }: { onStarted: (id: string) => void }) {
               </label>
             ))}
           </fieldset>
+          {mode === "live" && sub && cfg && (
+            ccProblem ? (
+              <Notice tone="serious">{ccProblem} Después recargue esta página. (Proveedor configurable en Settings.)</Notice>
+            ) : (
+              <Notice tone="good">Claude Code {cfg.env.claudeCode.version} con sesión iniciada en su cuenta de Claude: los agentes usarán su suscripción, no créditos de API.</Notice>
+            )
+          )}
           {mode === "live" && keyMissing && (
             <Notice tone="serious">
               No hay <code>ANTHROPIC_API_KEY</code> en el servidor. Cópiela en <code>.env.local</code> (ver <code>.env.example</code>) y reinicie <code>npm run dev</code>. La clave nunca se envía al navegador. Mientras tanto puede usar el modo demostración o el análisis en seco.
@@ -69,21 +79,25 @@ function StartPanel({ onStarted }: { onStarted: (id: string) => void }) {
           {mode === "live" && (
             <label className="flex items-start gap-2 text-sm">
               <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} className="mt-1" />
-              <span>Entiendo que esta sesión realiza llamadas de pago a la API de Anthropic, que el coste real depende de los tokens y herramientas utilizados, y que la aplicación detendrá nuevas llamadas al alcanzar el presupuesto configurado.</span>
+              <span>{sub ? "Entiendo que esta sesión ejecuta los agentes con mi suscripción de Claude y consumirá parte de mis límites de uso (puede agotar la ventana de 5 horas o el límite semanal); si se alcanza el límite, la sesión se pausa y se puede reanudar." : "Entiendo que esta sesión realiza llamadas de pago a la API de Anthropic, que el coste real depende de los tokens y herramientas utilizados, y que la aplicación detendrá nuevas llamadas al alcanzar el presupuesto configurado."}</span>
             </label>
           )}
-          <Button variant="primary" disabled={busy || (mode === "live" && (!consent || Boolean(keyMissing)))} onClick={start}>
-            {busy ? "Iniciando…" : mode === "live" ? "Iniciar comité (de pago)" : mode === "dry_run" ? "Ejecutar análisis en seco" : "Iniciar demostración"}
+          <Button variant="primary" disabled={busy || (mode === "live" && (!consent || Boolean(keyMissing) || Boolean(ccProblem)))} onClick={start}>
+            {busy ? "Iniciando…" : mode === "live" ? (sub ? "Iniciar comité (suscripción)" : "Iniciar comité (de pago)") : mode === "dry_run" ? "Ejecutar análisis en seco" : "Iniciar demostración"}
           </Button>
           {err && <ErrorBox>{err}</ErrorBox>}
         </div>
         <div>
-          <div className="mb-2 text-xs font-semibold text-ink-2">Estimación previa (modo real) — aproximada</div>
+          <div className="mb-2 text-xs font-semibold text-ink-2">Estimación previa (modo real) — aproximada{est?.subscription ? " · proveedor: suscripción Claude (Claude Code)" : " · proveedor: API de Anthropic"}</div>
           {est ? (
             <div className="space-y-2 text-sm">
               <div className="grid grid-cols-2 gap-2">
                 <Stat label="Llamadas aprox." value={fmt.int(est.totalCalls)} sub={`límite ${est.maxCalls}`} />
-                <Stat label="Coste estimado" value={est.estCostUsd === null ? "n/d" : `${est.estCostUsd.toFixed(2)} $`} sub={`presupuesto ${est.budgetUsd} $`} />
+                {est.subscription ? (
+                  <Stat label="Coste por token" value="0 $" sub={`incluido en su plan · equiv. API ≈ ${est.estCostUsd?.toFixed(2) ?? "n/d"} $`} />
+                ) : (
+                  <Stat label="Coste estimado" value={est.estCostUsd === null ? "n/d" : `${est.estCostUsd.toFixed(2)} $`} sub={`presupuesto ${est.budgetUsd} $`} />
+                )}
               </div>
               <div className="text-xs text-ink-2">
                 {est.agents} agentes · modelo principal <code>{est.model}</code> · debate <code>{est.debateModel}</code>
@@ -141,8 +155,12 @@ function Overview() {
                 <Stat label="Candidatas" value={v.candidates.filter((c) => c.included).length} sub={`${v.candidates.length} evaluadas`} />
                 <Stat label="Controversias abiertas" value={openIssues} sub={`${v.issues.length} incidencias`} />
                 <Stat label="Finalistas" value={v.verdicts.filter((x) => x.rank !== null).length} sub={`${v.verdicts.filter((x) => x.verdict === "POTENTIAL_BUY").length} compras potenciales`} />
-                <Stat label="Tokens" value={fmt.big(v.usage.totals.inputTokens + v.usage.totals.cacheReadTokens + v.usage.totals.cacheWriteTokens + v.usage.totals.outputTokens)} sub={`${v.usage.totals.calls} llamadas`} />
-                <Stat label="Coste estimado" value={`${v.usage.totals.estCostUsd.toFixed(3)} $`} sub={s.mode === "demo" ? "simulado (demo, 0 $)" : "estimación, no factura"} />
+                <Stat label="Tokens" value={fmt.big(v.usage.totals.inputTokens + v.usage.totals.cacheReadTokens + v.usage.totals.cacheWriteTokens + v.usage.totals.outputTokens)} sub={`${v.usage.totals.calls} turnos del modelo`} />
+                {s.mode === "live" && s.settings.provider === "claude_code" ? (
+                  <Stat label="Coste por token" value="0 $" sub={`suscripción · equiv. API ≈ ${v.usage.totals.estCostUsd.toFixed(2)} $`} />
+                ) : (
+                  <Stat label="Coste estimado" value={`${v.usage.totals.estCostUsd.toFixed(3)} $`} sub={s.mode === "demo" ? "simulado (demo, 0 $)" : "estimación, no factura"} />
+                )}
               </div>
               <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-ink-2">
                 <span>Modo: <Badge tone={s.mode === "demo" ? "demo" : "neutral"}>{s.mode}</Badge></span>
