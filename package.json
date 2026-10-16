@@ -2,7 +2,7 @@
   "name": "atlas-investment-committee",
   "version": "0.1.0",
   "private": true,
-  "description": "ATLAS Investment Committee — AI Equity Research Lab. Four-agent investment committee with real multi-agent debate.",
+  "description": "ATLAS Investment Committee \u2014 AI Equity Research Lab. Four-agent investment committee with real multi-agent debate.",
   "engines": {
     "node": ">=22.13.0"
   },
@@ -14,7 +14,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "npm run typecheck && npm run lint && npm run test"
+    "check": "npm run typecheck && npm run lint && npm run test",
+    "worker": "tsx scripts/worker.ts",
+    "eval": "tsx scripts/eval.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.135.0",
@@ -33,6 +35,7 @@
     "eslint": "^9.39.5",
     "eslint-config-next": "^15.5.28",
     "tailwindcss": "^4.3.3",
+    "tsx": "^4.23.15",
     "typescript": "^5.9.3",
     "vitest": "^3.2.7"
   }

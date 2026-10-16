@@ -17,6 +17,7 @@ export const SEC_URLS = {
     `https://data.sec.gov/api/xbrl/frames/${taxonomy}/${concept}/${unit}/${period}.json`,
   filingIndex: (cik: string, accession: string) =>
     `https://www.sec.gov/Archives/edgar/data/${Number(cik)}/${accession.replace(/-/g, "")}/${accession}-index.htm`,
+  document: (cik: string, accession: string, doc: string) => `https://www.sec.gov/Archives/edgar/data/${Number(cik)}/${accession.replace(/-/g, "")}/${doc}`,
   fullText: (q: string, forms?: string[], cik?: string) =>
     `https://efts.sec.gov/LATEST/search-index?q=${encodeURIComponent(q)}${forms?.length ? `&forms=${encodeURIComponent(forms.join(","))}` : ""}${cik ? `&ciks=${cik}` : ""}`,
 };
@@ -67,7 +68,7 @@ function durationDays(start: string | null, end: string): number | null {
 }
 
 /** Pure parser: extracts annual (10-K, full-year) values from a companyfacts payload. */
-export function parseAnnualFacts(json: unknown, cik: string): FactRecord[] {
+export function parseAnnualFacts(json: unknown, cik: string, asOf?: string | null): FactRecord[] {
   const facts = (json as { facts?: Record<string, Record<string, { units?: Record<string, unknown[]> }>> })?.facts ?? {};
   const out: FactRecord[] = [];
   for (const [key, def] of Object.entries(CONCEPTS)) {
@@ -80,6 +81,7 @@ export function parseAnnualFacts(json: unknown, cik: string): FactRecord[] {
       if (!units) continue;
       for (const u of units) {
         if (!u || typeof u.val !== "number" || !u.end) continue;
+        if (asOf && u.filed > asOf) continue; // point-in-time: not yet published
         const isAnnualForm = u.form === "10-K" || u.form === "10-K/A";
         if (!isAnnualForm && key !== "sharesOutstanding") continue;
         if (!def.instant) {
@@ -131,13 +133,13 @@ export function parseFrame(json: unknown): FrameRow[] {
 export function parseSubmissions(json: unknown, cik: string): CompanyProfile {
   const j = json as {
     name?: string; tickers?: string[]; exchanges?: string[]; sic?: string; sicDescription?: string; fiscalYearEnd?: string;
-    filings?: { recent?: { form: string[]; filingDate: string[]; reportDate: string[]; accessionNumber: string[]; primaryDocDescription?: string[] } };
+    filings?: { recent?: { form: string[]; filingDate: string[]; reportDate: string[]; accessionNumber: string[]; primaryDocument?: string[]; primaryDocDescription?: string[] } };
   };
   const r = j.filings?.recent;
   const recent = r
-    ? r.form.map((form, i) => ({ form, filingDate: r.filingDate[i], reportDate: r.reportDate[i] || null, accession: r.accessionNumber[i], url: SEC_URLS.filingIndex(cik, r.accessionNumber[i]), description: r.primaryDocDescription?.[i] ?? null }))
+    ? r.form.map((form, i) => ({ form, filingDate: r.filingDate[i], reportDate: r.reportDate[i] || null, accession: r.accessionNumber[i], url: SEC_URLS.filingIndex(cik, r.accessionNumber[i]), documentUrl: r.primaryDocument?.[i] ? SEC_URLS.document(cik, r.accessionNumber[i], r.primaryDocument[i]) : null, description: r.primaryDocDescription?.[i] ?? null }))
         .filter((f) => ["10-K", "10-Q", "8-K", "10-K/A", "DEF 14A", "S-1", "S-3"].includes(f.form))
-        .slice(0, 25)
+        .slice(0, 300)
     : [];
   return {
     cik,
@@ -158,17 +160,22 @@ export class SecEdgarProvider implements ReferenceDataProvider, FundamentalsProv
   constructor(private opts: SecOptions) {}
 
   private async getJson(url: string): Promise<{ body: unknown; retrievedAt: string }> {
+    return this.get(url, "json") as Promise<{ body: unknown; retrievedAt: string }>;
+  }
+
+  private async get(url: string, as: "json" | "text"): Promise<{ body: unknown; retrievedAt: string }> {
     if (!this.opts.userAgent) {
       throw new ProviderError("sec", "SEC_USER_AGENT no configurado. La SEC exige un User-Agent con e-mail de contacto (ver .env.example).");
     }
     const ttl = this.opts.cacheTtlMs ?? 12 * 3600_000;
     const m = this.mem.get(url);
     if (m && Date.now() - m.at < ttl) return { body: m.body, retrievedAt: new Date(m.at).toISOString() };
-    const cacheFile = this.opts.cacheDir ? path.join(this.opts.cacheDir, createHash("sha1").update(url).digest("hex") + ".json") : null;
+    const cacheFile = this.opts.cacheDir ? path.join(this.opts.cacheDir, createHash("sha1").update(url).digest("hex") + (as === "json" ? ".json" : ".txt")) : null;
     if (cacheFile && fs.existsSync(cacheFile)) {
       const st = fs.statSync(cacheFile);
       if (Date.now() - st.mtimeMs < ttl) {
-        const body = JSON.parse(fs.readFileSync(cacheFile, "utf8"));
+        const raw = fs.readFileSync(cacheFile, "utf8");
+        const body = as === "json" ? JSON.parse(raw) : raw;
         this.mem.set(url, { at: st.mtimeMs, body });
         return { body, retrievedAt: new Date(st.mtimeMs).toISOString() };
       }
@@ -179,18 +186,18 @@ export class SecEdgarProvider implements ReferenceDataProvider, FundamentalsProv
     const f = this.opts.fetchImpl ?? fetch;
     let res: Response;
     try {
-      res = await f(url, { headers: { "User-Agent": this.opts.userAgent, Accept: "application/json" } });
+      res = await f(url, { headers: { "User-Agent": this.opts.userAgent, Accept: as === "json" ? "application/json" : "text/html,*/*" } });
     } catch (e) {
       throw new ProviderError("sec", `No se pudo conectar con ${url}: ${e instanceof Error ? e.message : e}`);
     }
     if (res.status === 404) throw new ProviderError("sec", `No encontrado: ${url}`);
     if (!res.ok) throw new ProviderError("sec", `HTTP ${res.status} en ${url}`);
-    const body = await res.json();
+    const body = as === "json" ? await res.json() : (await res.text()).slice(0, 15_000_000);
     const now = Date.now();
     this.mem.set(url, { at: now, body });
     if (cacheFile) {
       fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
-      fs.writeFileSync(cacheFile, JSON.stringify(body));
+      fs.writeFileSync(cacheFile, as === "json" ? JSON.stringify(body) : (body as string));
     }
     return { body, retrievedAt: new Date(now).toISOString() };
   }
@@ -207,17 +214,23 @@ export class SecEdgarProvider implements ReferenceDataProvider, FundamentalsProv
     return { data: parseSubmissions(body, c), source: "SEC EDGAR submissions API", url, retrievedAt };
   }
 
-  async annualFacts(cik: string): Promise<Sourced<FactRecord[]>> {
+  async annualFacts(cik: string, opts: { asOf?: string | null } = {}): Promise<Sourced<FactRecord[]>> {
     const c = padCik(cik);
     const url = SEC_URLS.companyFacts(c);
     const { body, retrievedAt } = await this.getJson(url);
-    return { data: parseAnnualFacts(body, c), source: "SEC EDGAR XBRL companyfacts API (10-K)", url, retrievedAt };
+    return { data: parseAnnualFacts(body, c, opts.asOf), source: `SEC EDGAR XBRL companyfacts API (10-K${opts.asOf ? `, presentados hasta ${opts.asOf}` : ""})`, url, retrievedAt };
   }
 
   async frame(concept: string, unit: string, period: string): Promise<Sourced<FrameRow[]>> {
     const url = SEC_URLS.frame("us-gaap", concept, unit, period);
     const { body, retrievedAt } = await this.getJson(url);
     return { data: parseFrame(body), source: `SEC EDGAR XBRL frames ${concept} ${period}`, url, retrievedAt };
+  }
+
+  async filingDocument(url: string): Promise<Sourced<string>> {
+    if (!url.startsWith("https://www.sec.gov/Archives/")) throw new ProviderError("sec", "Solo se leen documentos del archivo EDGAR");
+    const { body, retrievedAt } = await this.get(url, "text");
+    return { data: body as string, source: "SEC EDGAR (documento presentado)", url, retrievedAt };
   }
 
   async fullTextSearch(query: string, opts: { forms?: string[]; cik?: string } = {}) {

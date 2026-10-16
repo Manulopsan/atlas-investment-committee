@@ -14,6 +14,9 @@ export function objectiveBlock(c: InvestmentConfig): string {
     `- Moneda: USD (alternativa EUR, con riesgo de divisa). Margen de seguridad requerido: ${(c.requiredMarginOfSafety * 100).toFixed(0)}%. Tasa de descuento de referencia: ${(c.discountRate * 100).toFixed(1)}%.`,
     `- Riesgo: tolerancia ${c.riskTolerance}, priorizando evitar pérdidas permanentes de capital.`,
     `- Sectores excluidos: ${c.excludedSectors.join(", ") || "ninguno"}. Máximo de finalistas: ${c.maxFinalists} (puede ser cero).`,
+    ...(c.asOfDate
+      ? [`- MODO HISTÓRICO: la fecha de análisis es ${c.asOfDate}. Las herramientas solo devuelven información disponible en esa fecha. Razona como si fuera ${c.asOfDate}: NO uses conocimiento posterior (resultados, precios o hechos que conozcas de después), aunque lo recuerdes.`]
+      : []),
   ].join("\n");
 }
 
@@ -45,7 +48,10 @@ export function round1Prompt(role: AgentRole, config: InvestmentConfig, cands: C
     candidatesBlock(cands),
     notes.length ? `TUS NOTAS DE TRABAJO PRIVADAS:\n${notes.map((n) => `- ${n}`).join("\n")}` : "",
     task,
-    "Usa las herramientas para obtener datos (get_company_financials, get_price, get_company_profile, search_sec_filings, verify_source, compute_valuation, compute_dcf). Prioriza calidad sobre cantidad: analiza a fondo las candidatas más relevantes; puedes descartar candidatas indicando el motivo en las conclusiones.",
+    "Usa las herramientas para obtener datos: get_company_financials, get_price, get_company_profile, read_filing_section (texto literal del 10-K: risk_factors, mda, business, legal_proceedings…), get_historical_valuation (múltiplos históricos propios), get_peer_comparables (comparables con los competidores que elijas), search_sec_filings, verify_source, compute_valuation y compute_dcf. Prioriza calidad sobre cantidad: analiza a fondo las candidatas más relevantes; puedes descartar candidatas indicando el motivo en las conclusiones.",
+    role === "RISK" ? "Lee los factores de riesgo y los procedimientos legales con read_filing_section y cita los pasajes (EV-n)." : "",
+    role === "VALUATION" ? "Contrasta la valoración con get_historical_valuation y con comparables (get_peer_comparables)." : "",
+    role === "QUALITY" ? "Usa el MD&A y la descripción del negocio (read_filing_section) para justificar ventajas competitivas y asignación de capital." : "",
     "Cada cifra de 'metrics' debe llevar su evidence_id (EV-n) o null si no está verificada. Indica siempre el periodo fiscal.",
     role === "VALUATION" ? "Para cada empresa incluye el bloque 'valuation' con hipótesis bear/base/bull (o null si no hay datos suficientes) y comprueba los resultados con compute_valuation." : "",
     role === "RISK" ? "Incluye 'vetoes' solo con evidencia suficiente (motivo, evidencia, fuente, EV-n y gravedad)." : "",

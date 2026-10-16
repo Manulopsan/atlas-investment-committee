@@ -30,6 +30,11 @@ export const InvestmentConfigSchema = z.object({
   userPrices: z.array(z.object({ ticker: z.string(), price: z.number().positive(), date: z.string() })).default([]),
   /** When true, only user-imported tickers are analysed (no automatic discovery). */
   userTickersOnly: z.boolean().default(false),
+  /**
+   * Point-in-time (historical) mode, YYYY-MM-DD: only filings filed and prices
+   * quoted on or before this date are used. Used by the evaluation harness.
+   */
+  asOfDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().default(null),
   /** How many screened companies are handed to the agents in round 1. */
   maxCandidates: z.number().int().min(1).max(30).default(10),
   /** How many companies go through the structured per-company debate. */
@@ -90,6 +95,8 @@ export const AppSettingsSchema = z.object({
   refusalFallback: z.boolean().default(true),
   /** Anthropic server-side web search (extra cost per search). Results are always UNVERIFIED. */
   enableWebSearch: z.boolean().default(false),
+  /** Use the (free) token-counting endpoint before each call for a precise budget check. */
+  preciseTokenCount: z.boolean().default(true),
   webSearchMaxUses: z.number().int().min(1).max(10).default(3),
   pricing: z.record(z.string(), ModelPriceSchema).default(DEFAULT_PRICING),
   pricingNote: z.string().default("Tabla por defecto — verifique en https://www.anthropic.com/pricing"),

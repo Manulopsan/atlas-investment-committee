@@ -107,7 +107,7 @@ describe("universe and discovery", () => {
   });
   it("live discovery without network/User-Agent reports an unverified universe instead of inventing one", async () => {
     const f = (async () => { throw new Error("offline"); }) as unknown as typeof fetch;
-    const md = { synthetic: false, reference: new SecEdgarProvider({ userAgent: "x y@z.com", fetchImpl: f, cacheDir: null, minIntervalMs: 0 }), fundamentals: new SecEdgarProvider({ userAgent: "x y@z.com", fetchImpl: f, cacheDir: null, minIntervalMs: 0 }), prices: [], fx: null };
+    const md = { synthetic: false, reference: new SecEdgarProvider({ userAgent: "x y@z.com", fetchImpl: f, cacheDir: null, minIntervalMs: 0 }), fundamentals: new SecEdgarProvider({ userAgent: "x y@z.com", fetchImpl: f, cacheDir: null, minIntervalMs: 0 }), prices: [], history: [], fx: null };
     const r = await discoverCandidates(md, InvestmentConfigSchema.parse({}), new Date("2026-10-16"));
     expect(r.candidates).toHaveLength(0);
     expect(r.coverage.level).toBe("UNVERIFIED_UNIVERSE");

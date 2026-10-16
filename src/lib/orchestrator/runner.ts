@@ -32,6 +32,7 @@ import {
   type VerdictRow,
 } from "../db/repo";
 import { addEvidence, citationStatus, listEvidence, shortId } from "../evidence/registry";
+import { reconcileForTicker } from "../evidence/reconcile";
 import { allowedVerdict, finalScore, rankFinalists, reconcileVerdict, SCORING_METHOD } from "../finance/scoring";
 import { computeScenarios, SCENARIO_FORMULA } from "../finance/valuation";
 import { eurCagr, fxSensitivity, TOTAL_RETURN_METHOD } from "../finance/returns";
@@ -87,9 +88,9 @@ export class PhaseFailedError extends Error {
   }
 }
 
-const DEBATE_TOOLS = ["get_evidence", "verify_source", "get_company_financials", "get_price", "compute_valuation", "compute_dcf", "search_sec_filings", "record_claim", "save_note"];
-const VERIFY_TOOLS = ["get_evidence", "verify_source", "get_company_financials", "get_price", "get_company_profile", "search_sec_filings"];
-const ROUND1_TOOLS = ["get_company_financials", "get_price", "get_fx_rate", "get_company_profile", "search_sec_filings", "verify_source", "record_claim", "get_evidence", "compute_valuation", "compute_dcf", "save_note"];
+const DEBATE_TOOLS = ["get_evidence", "verify_source", "get_company_financials", "get_price", "read_filing_section", "get_historical_valuation", "get_peer_comparables", "compute_valuation", "compute_dcf", "search_sec_filings", "record_claim", "save_note"];
+const VERIFY_TOOLS = ["get_evidence", "verify_source", "get_company_financials", "get_price", "get_company_profile", "read_filing_section", "search_sec_filings"];
+const ROUND1_TOOLS = ["get_company_financials", "get_price", "get_fx_rate", "get_company_profile", "read_filing_section", "get_historical_valuation", "get_peer_comparables", "search_sec_filings", "verify_source", "record_claim", "get_evidence", "compute_valuation", "compute_dcf", "save_note"];
 
 /* ----------------------------- utilities ---------------------------- */
 
@@ -165,11 +166,13 @@ const iter = (s: SessionRow, n: number) => Math.max(2, Math.min(n, s.settings.li
 function storedReport(role: AgentRole, out: InitialReportT, model: string, sessionId: string): StoredReport {
   const totals: Record<string, number> = {};
   const cites: StoredReport["citation_check"] = {};
+  const recon: NonNullable<StoredReport["reconciliation"]> = {};
   for (const c of out.companies) {
     totals[c.ticker] = Math.round(totalScore(role, c.scores) * 10) / 10;
     cites[c.ticker] = citationStatus(sessionId, c.metrics.map((m) => m.evidence_id).filter((x): x is string => Boolean(x)));
+    recon[c.ticker] = reconcileForTicker(sessionId, c.ticker, [c.thesis, c.provisional_conclusion, ...c.key_points, ...c.uncertainties].join("\n"));
   }
-  return { ...out, role, generated_at: new Date().toISOString(), model, totals, citation_check: cites };
+  return { ...out, role, generated_at: new Date().toISOString(), model, totals, citation_check: cites, reconciliation: recon };
 }
 
 function validReplyTo(sessionId: string, id: number | null): number | null {
@@ -410,6 +413,7 @@ async function debateTurn(s: SessionRow, deps: RunnerDeps, ticker: string, role:
         {
           sessionId: s.id,
           taskKey: key,
+          ticker,
           phase: "DEBATE",
           role,
           model: s.settings.debateModel,
@@ -547,7 +551,7 @@ async function phaseVerification(s: SessionRow, deps: RunnerDeps) {
             "Entrega con submit_verification.",
           ].join("\n\n");
           const r = await runAgentTask(
-            { sessionId: s.id, taskKey: key, phase: "VERIFICATION", role, model: s.settings.debateModel, prompt, dataTools: VERIFY_TOOLS, submit: { name: "submit_verification", description: "Resultado de la verificación.", schema: VerificationSchema }, maxIterations: iter(s, 4) },
+            { sessionId: s.id, taskKey: key, ticker, phase: "VERIFICATION", role, model: s.settings.debateModel, prompt, dataTools: VERIFY_TOOLS, submit: { name: "submit_verification", description: "Resultado de la verificación.", schema: VerificationSchema }, maxIterations: iter(s, 4) },
             { ...deps, isStopRequested: () => Boolean(getSession(s.id)?.stopRequested) },
           );
           return r.output as VerificationT;
@@ -587,6 +591,7 @@ function buildRevision(s: SessionRow, role: AgentRole, round: number, companies:
         original_total: orig ? Math.round(totalScore(role, orig.scores) * 10) / 10 : null,
         revised_total: Math.round(totalScore(role, c.revised_scores) * 10) / 10,
         original_conclusion: prevRev?.revised_conclusion ?? orig?.provisional_conclusion ?? null,
+        reconciliation: reconcileForTicker(s.id, c.ticker, [c.revised_conclusion, c.change_reason, ...c.new_data.map((d) => d.summary)].join("\n")),
       };
     }),
     ...(role === "RISK" ? { vetoes: vetoes ?? [] } : {}),
@@ -783,8 +788,10 @@ async function phaseFinal(s: SessionRow, deps: RunnerDeps) {
   }
   // FX (deterministic, no AI) for EUR presentation.
   let fx = listEvidence(s.id, { metric: "fx_usd_per_eur" }).filter((e) => e.verification === "VERIFIED").pop() ?? null;
+  const asOf = s.config.asOfDate ?? null;
+  if (asOf) fx = listEvidence(s.id, { metric: "fx_usd_per_eur" }).filter((e) => e.verification === "VERIFIED" && (e.publishedAt ?? "") <= asOf).pop() ?? null;
   if (!fx && deps.md.fx) {
-    const r = await deps.md.fx.usdPerEur().catch(() => null);
+    const r = await (asOf ? deps.md.fx.usdPerEurOn?.(asOf) ?? Promise.resolve(null) : deps.md.fx.usdPerEur()).catch(() => null);
     if (r) fx = addEvidence(s.id, { ticker: null, metric: "fx_usd_per_eur", value: r.usdPerEur, unit: "USD/EUR", period: r.date, periodType: "POINT", publishedAt: r.date, retrievedAt: r.retrievedAt, source: r.source, url: r.url, dataType: "REPORTED", verification: "VERIFIED", confidence: "HIGH", confidenceReason: "Tipo de referencia oficial", createdBy: `system:${deps.md.fx.id}`, synthetic: deps.md.synthetic });
   }
   const snaps = tickers.map((t) => companySnapshot(s.id, t, s.config));

@@ -31,6 +31,16 @@ export class AnthropicAdapter implements ModelAdapter {
     }
   }
 
+  /** Free token-counting endpoint; failures fall back to the heuristic estimate (never block the run). */
+  async countTokens(req: Pick<ModelRequest, "model" | "system" | "messages" | "tools">): Promise<number | null> {
+    try {
+      const r = await this.client.beta.messages.countTokens({ model: req.model, system: req.system, messages: req.messages, tools: req.tools } as Parameters<Anthropic["beta"]["messages"]["countTokens"]>[0]);
+      return typeof r.input_tokens === "number" ? r.input_tokens : null;
+    } catch {
+      return null;
+    }
+  }
+
   private async send(req: ModelRequest, fallback: boolean): Promise<ModelResponse> {
     const params = {
       model: req.model,

@@ -15,10 +15,9 @@ import {
 } from "./db/repo";
 import { listEvidence, shortId } from "./evidence/registry";
 import { usageBreakdown } from "./llm/cost";
-import { isRunning } from "./orchestrator/manager";
+import { runState } from "./orchestrator/manager";
 import { companySnapshot } from "./orchestrator/companyState";
 import { redactDeep } from "./security/redact";
-import { TERMINAL_STATUSES } from "./state";
 
 /** Serialisable state for the dashboard. Secrets are never part of it (and are redacted defensively). */
 export function sessionSummaries() {
@@ -30,8 +29,7 @@ export function sessionSummaries() {
       mode: s.mode,
       status: s.status,
       convergence: s.convergence,
-      running: isRunning(s.id),
-      interrupted: !isRunning(s.id) && !TERMINAL_STATUSES.includes(s.status) && s.status !== "PAUSED_ERROR",
+      ...runState(s),
       usage: usageBreakdown(s.id).totals,
     })),
   );
@@ -42,7 +40,7 @@ export function sessionView(id: string) {
   if (!s) return null;
   const evidence = listEvidence(id).map((e) => ({ ...e, id: shortId(e.id), inputs: e.inputs.map(shortId) }));
   return redactDeep({
-    session: { ...s, running: isRunning(id), interrupted: !isRunning(id) && !TERMINAL_STATUSES.includes(s.status) && s.status !== "PAUSED_ERROR" },
+    session: { ...s, ...runState(s) },
     tasks: listTasks(id),
     candidates: listCandidates(id),
     reports: listReports(id),

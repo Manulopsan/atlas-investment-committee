@@ -87,6 +87,7 @@ export function usageBreakdown(sessionId: string) {
     totals: usageTotals(sessionId),
     byAgent: by((r) => r.agentRole ?? "—"),
     byPhase: by((r) => r.phase ?? "—"),
+    byCompany: by((r) => r.ticker ?? "varias / general"),
     models: Array.from(new Set(rows.map((r) => r.model))),
     basis: COST_BASIS,
   };

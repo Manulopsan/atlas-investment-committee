@@ -1,16 +1,17 @@
 import path from "node:path";
 import type { AppSettings, SectorExclusion } from "../config";
 import { SecEdgarProvider } from "./sec";
-import { AlphaVantagePriceProvider, EcbFxProvider, ManualPriceProvider, StooqPriceProvider } from "./prices";
+import { AlphaVantageHistoryProvider, AlphaVantagePriceProvider, EcbFxProvider, ManualPriceProvider, StooqHistoryProvider, StooqPriceProvider } from "./prices";
 import { syntheticMarketData } from "./synthetic";
-import type { MarketData, PriceProvider } from "./types";
+import type { MarketData, PriceHistoryProvider, PriceProvider } from "./types";
 import type { SessionMode } from "../types";
 
 export * from "./types";
 
 /** Builds the provider set for a session. Demo sessions get synthetic data only; live sessions never do. */
 export function createMarketData(mode: SessionMode, settings: AppSettings, opts: { fetchImpl?: typeof fetch; userPrices?: { ticker: string; price: number; date: string }[] } = {}): MarketData {
-  if (mode === "demo") return syntheticMarketData();
+  const asOf = settings.investment.asOfDate ?? null;
+  if (mode === "demo") return { ...syntheticMarketData(), asOf };
   const sec = new SecEdgarProvider({
     userAgent: process.env.SEC_USER_AGENT?.trim() || "",
     fetchImpl: opts.fetchImpl,
@@ -21,11 +22,16 @@ export function createMarketData(mode: SessionMode, settings: AppSettings, opts:
   if (settings.priceProvider === "alphavantage" && av) prices.push(new AlphaVantagePriceProvider(av, opts.fetchImpl));
   if (settings.priceProvider !== "manual") prices.push(new StooqPriceProvider(opts.fetchImpl));
   if (opts.userPrices?.length) prices.push(new ManualPriceProvider(opts.userPrices));
+  const history: PriceHistoryProvider[] = [];
+  if (av) history.push(new AlphaVantageHistoryProvider(av, opts.fetchImpl));
+  history.push(new StooqHistoryProvider(opts.fetchImpl));
   return {
     synthetic: false,
+    asOf,
     reference: sec,
     fundamentals: sec,
     prices,
+    history,
     fx: settings.fxProvider === "ecb" ? new EcbFxProvider(opts.fetchImpl) : null,
   };
 }

@@ -31,6 +31,8 @@ export interface AgentTaskSpec<S extends z.ZodType> {
   maxIterations: number;
   isFinal?: boolean;
   round1?: boolean;
+  /** Company this task is about (null for multi-company tasks) — used for per-company cost. */
+  ticker?: string | null;
 }
 
 export class AgentOutputError extends Error {
@@ -59,7 +61,15 @@ export async function runAgentTask<S extends z.ZodType>(spec: AgentTaskSpec<S>, 
     if (deps.isStopRequested()) throw new StopRequestedError();
     const lastChance = iter >= spec.maxIterations - 1;
     const tools = lastChance ? [submitTool] : [...dataTools, submitTool];
-    const estInput = estimateTokens(profile.system + JSON.stringify(messages) + JSON.stringify(tools));
+    let estInput = estimateTokens(profile.system + JSON.stringify(messages) + JSON.stringify(tools));
+    let estimateBasis = "heurística (~3 caracteres/token)";
+    if (deps.settings.preciseTokenCount && deps.adapter.countTokens) {
+      const exact = await deps.adapter.countTokens({ model: spec.model, system: profile.system, messages, tools });
+      if (exact !== null) {
+        estInput = exact;
+        estimateBasis = "count_tokens (exacto)";
+      }
+    }
     checkBudget(spec.sessionId, deps.settings, { model: spec.model, estInputTokens: estInput, maxOutputTokens: L.maxOutputTokensPerCall, isFinal: Boolean(spec.isFinal) });
 
     const resp = await deps.adapter.create({
@@ -74,6 +84,8 @@ export async function runAgentTask<S extends z.ZodType>(spec: AgentTaskSpec<S>, 
     });
     insertUsage(spec.sessionId, {
       taskKey: spec.taskKey,
+      ticker: spec.ticker ?? null,
+      inputEstimateBasis: estimateBasis,
       agentRole: spec.role,
       phase: spec.phase,
       model: resp.model,

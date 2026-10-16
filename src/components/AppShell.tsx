@@ -13,6 +13,7 @@ const NAV = [
   { href: "/research", label: "Research", key: "D" },
   { href: "/ranking", label: "Final Ranking", key: "E" },
   { href: "/settings", label: "Settings", key: "G" },
+  { href: "/evals", label: "Evals", key: "H" },
 ];
 
 function ThemeToggle() {
@@ -74,7 +75,7 @@ function ShellInner({ children }: { children: ReactNode }) {
           {NAV.map((n) => {
             const active = n.href === "/" ? pathname === "/" : pathname.startsWith(n.href);
             return (
-              <Link key={n.href} href={sid && n.href !== "/settings" ? `${n.href}?s=${sid}` : n.href} aria-current={active ? "page" : undefined} className={`flex items-center gap-2 whitespace-nowrap rounded-md px-2.5 py-1.5 text-sm ${active ? "bg-surface-2 font-semibold text-ink" : "text-ink-2 hover:bg-surface-2"}`}>
+              <Link key={n.href} href={sid && n.href !== "/settings" && n.href !== "/evals" ? `${n.href}?s=${sid}` : n.href} aria-current={active ? "page" : undefined} className={`flex items-center gap-2 whitespace-nowrap rounded-md px-2.5 py-1.5 text-sm ${active ? "bg-surface-2 font-semibold text-ink" : "text-ink-2 hover:bg-surface-2"}`}>
                 <span className="num w-4 text-[10px] text-ink-3">{n.key}</span>
                 {n.label}
               </Link>
@@ -98,6 +99,7 @@ function ShellInner({ children }: { children: ReactNode }) {
           {current && <StatusBadge status={current.status} />}
           {current?.mode === "demo" && <Badge tone="demo">DEMOSTRACIÓN · datos sintéticos</Badge>}
           {current?.running && <Badge tone="accent">en ejecución</Badge>}
+          {current?.queued && <Badge tone="accent">en cola (worker)</Badge>}
           {current?.interrupted && <Badge tone="serious">interrumpida — reanudable</Badge>}
           <div className="ml-auto">
             <ThemeToggle />

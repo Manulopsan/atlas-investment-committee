@@ -37,6 +37,8 @@ export interface ModelAdapter {
   /** "scripted" responses are synthetic and never count as real analysis. */
   kind: "anthropic" | "scripted";
   create(req: ModelRequest): Promise<ModelResponse>;
+  /** Exact input-token count for a request, when the provider offers it (null = unavailable). */
+  countTokens?(req: Pick<ModelRequest, "model" | "system" | "messages" | "tools">): Promise<number | null>;
 }
 
 export class ModelRefusalError extends Error {

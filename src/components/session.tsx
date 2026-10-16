@@ -1,12 +1,29 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, usePolling } from "./hooks";
 import type { SessionView } from "./types";
 import { Button, ErrorBox, Notice } from "./ui";
 import { PHASE_ORDER } from "@/lib/state";
 
+/**
+ * Live session view: Server-Sent Events push a refresh whenever the stored
+ * state changes; a slow poll remains as a fallback if SSE is unavailable.
+ */
 export function useSessionView(sid: string | null) {
-  return usePolling<SessionView>(sid ? `/api/sessions/${sid}` : null, (d) => d.session.running || ["CREATED", "DISCOVERY"].includes(d.session.status));
+  const [sseOk, setSseOk] = useState(false);
+  const v = usePolling<SessionView>(sid ? `/api/sessions/${sid}` : null, (d) => d.session.running || d.session.queued || ["CREATED", "DISCOVERY"].includes(d.session.status), sseOk ? 20_000 : 2_500);
+  const { refresh } = v;
+  useEffect(() => {
+    if (!sid || typeof EventSource === "undefined") return;
+    const es = new EventSource(`/api/sessions/${sid}/events`);
+    es.addEventListener("update", () => {
+      setSseOk(true);
+      refresh();
+    });
+    es.onerror = () => setSseOk(false);
+    return () => es.close();
+  }, [sid, refresh]);
+  return v;
 }
 
 const PHASE_LABELS: Record<string, string> = {
@@ -63,10 +80,11 @@ export function SessionActions({ v, onChange }: { v: SessionView; onChange: () =
   return (
     <div className="space-y-3">
       {s.error && <ErrorBox>{s.error}</ErrorBox>}
+      {s.queued && <Notice tone="accent">En cola: el proceso <code>npm run worker</code> ejecutará la sesión (modo ATLAS_RUNNER=worker). Si no hay ningún worker en marcha, arránquelo.</Notice>}
       {s.interrupted && <Notice tone="serious">La sesión se interrumpió (por ejemplo, al cerrar la aplicación). Puede reanudarla: las tareas ya completadas no se repiten.</Notice>}
       <div className="flex flex-wrap gap-2">
         {s.running && <Button variant="danger" disabled={busy} onClick={() => act("stop")}>Detener</Button>}
-        {!s.running && !terminal && <Button variant="primary" disabled={busy} onClick={() => act("resume")}>Reanudar</Button>}
+        {!s.running && !s.queued && !terminal && <Button variant="primary" disabled={busy} onClick={() => act("resume")}>Reanudar</Button>}
         {!s.running && s.status === "PAUSED_ERROR" && <Button variant="danger" disabled={busy} onClick={() => act("abandon")}>Abandonar (FAILED)</Button>}
         {!s.running && !terminal && s.status !== "PAUSED_ERROR" && <Button variant="danger" disabled={busy} onClick={() => act("stop")}>Detener</Button>}
       </div>

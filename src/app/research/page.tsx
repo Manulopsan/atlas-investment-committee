@@ -8,6 +8,20 @@ import type { StoredReport, StoredRevision } from "@/lib/agents/schemas";
 import { PROFILES } from "@/lib/agents/profiles";
 import { AGENT_ROLES, ROLE_LABELS } from "@/lib/types";
 import type { SessionView } from "@/components/types";
+import type { Reconciliation } from "@/lib/evidence/reconcile";
+
+function ReconBadge({ r }: { r?: Reconciliation }) {
+  if (!r || (!r.matched.length && !r.unmatched.length)) return null;
+  return (
+    <details className="mt-1 text-[11px]">
+      <summary className="cursor-pointer">
+        Cifras en texto: <Badge tone="good">{r.matched.length} conciliadas</Badge> {r.unmatched.length > 0 && <Badge tone="warning">{r.unmatched.length} sin conciliar</Badge>}
+      </summary>
+      {r.matched.map((m, i) => <div key={`m${i}`} className="text-ink-2">✓ {m.raw} = {m.metric} [{m.evidenceId}]{m.verified ? "" : " (evidencia no verificada)"}</div>)}
+      {r.unmatched.map((u, i) => <div key={`u${i}`} className="text-ink-2">! {u.raw} — {u.note}</div>)}
+    </details>
+  );
+}
 
 const TABS = ["Candidatas", "Informes iniciales", "Revisiones", "Evidencias", "Incidencias", "Historial de puntuaciones", "Exportar"] as const;
 
@@ -37,6 +51,7 @@ function InitialReports({ v, sid }: { v: SessionView; sid: string }) {
                           <div key={i}>{m.name} {m.value ?? ""} {m.unit} {m.period} {m.evidence_id ? <span className="num text-ink-2">[{m.evidence_id}]</span> : <Badge tone="warning">no verificado</Badge>}</div>
                         ))}
                         <div className="text-ink-3">citas verificadas: {c.citation_check[co.ticker]?.verified.length ?? 0}, sin verificar: {c.citation_check[co.ticker]?.unverified.length ?? 0}, inexistentes: {c.citation_check[co.ticker]?.missing.length ?? 0}</div>
+                        <ReconBadge r={c.reconciliation?.[co.ticker]} />
                       </Td>
                       <Td className="max-w-xs text-xs">{co.provisional_conclusion}</Td>
                     </tr>
@@ -72,7 +87,7 @@ function Revisions({ v }: { v: SessionView }) {
                   {c.companies.map((co) => (
                     <tr key={co.ticker}>
                       <Td>{co.ticker}</Td>
-                      <Td className="num">{fmt.num(co.original_total)} → {fmt.num(co.revised_total)}<div className="text-[11px] text-ink-2">{co.change_reason}</div></Td>
+                      <Td className="num">{fmt.num(co.original_total)} → {fmt.num(co.revised_total)}<div className="text-[11px] text-ink-2">{co.change_reason}</div><ReconBadge r={co.reconciliation} /></Td>
                       <Td className="text-xs"><div className="text-ink-3">{co.original_conclusion ?? "—"}</div><div>{co.revised_conclusion}</div></Td>
                       <Td className="text-xs">{co.accepted_arguments.map((a, i) => <div key={i}>{a.message_id ? `#${a.message_id} ` : ""}{a.summary}</div>)}</Td>
                       <Td className="text-xs">{co.rejected_arguments.map((a, i) => <div key={i}>{a.message_id ? `#${a.message_id} ` : ""}{a.summary} — {a.reason}</div>)}</Td>

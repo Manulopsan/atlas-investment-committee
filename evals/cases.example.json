@@ -1,0 +1,12 @@
+{
+  "name": "Ejemplo — grandes compañías estadounidenses (prueba del arnés, no es una recomendación)",
+  "cases": [
+    {
+      "name": "Mediados de 2021",
+      "asOf": "2021-06-30",
+      "horizonYears": 3,
+      "tickers": ["AAPL", "MSFT", "INTC", "PYPL", "COST"],
+      "notes": "Lista elegida a posteriori: sujeta a sesgo de selección. Sustitúyala por sus propios casos."
+    }
+  ]
+}

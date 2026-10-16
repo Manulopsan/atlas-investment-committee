@@ -78,6 +78,9 @@ export interface SessionRow {
   error: string | null;
   cutoffAt: string | null;
   completedAt: string | null;
+  runRequested: boolean;
+  leaseOwner: string | null;
+  leaseUntil: string | null;
 }
 
 function toSession(r: Row): SessionRow {
@@ -98,7 +101,62 @@ function toSession(r: Row): SessionRow {
     error: (r.error as string) ?? null,
     cutoffAt: (r.cutoff_at as string) ?? null,
     completedAt: (r.completed_at as string) ?? null,
+    runRequested: Boolean(r.run_requested),
+    leaseOwner: (r.lease_owner as string) ?? null,
+    leaseUntil: (r.lease_until as string) ?? null,
   };
+}
+
+/* ------------------------------ run leases --------------------------- */
+// A session is executed by exactly one runner (web process or worker) holding a time-limited lease.
+
+export function requestRun(id: string, requested = true) {
+  run("UPDATE sessions SET run_requested = ? WHERE id = ?", requested ? 1 : 0, id);
+}
+
+export function acquireLease(id: string, owner: string, ms: number): boolean {
+  const now = nowIso();
+  const until = new Date(Date.now() + ms).toISOString();
+  const r = run("UPDATE sessions SET lease_owner = ?, lease_until = ? WHERE id = ? AND (lease_until IS NULL OR lease_until < ? OR lease_owner = ?)", owner, until, id, now, owner);
+  return Number(r.changes) === 1;
+}
+
+export function renewLease(id: string, owner: string, ms: number): boolean {
+  const r = run("UPDATE sessions SET lease_until = ? WHERE id = ? AND lease_owner = ?", new Date(Date.now() + ms).toISOString(), id, owner);
+  return Number(r.changes) === 1;
+}
+
+export function releaseLease(id: string, owner: string) {
+  run("UPDATE sessions SET lease_owner = NULL, lease_until = NULL WHERE id = ? AND lease_owner = ?", id, owner);
+}
+
+export function leaseActive(s: Pick<SessionRow, "leaseUntil">): boolean {
+  return Boolean(s.leaseUntil && s.leaseUntil > nowIso());
+}
+
+/** Sessions waiting for a runner: requested, not finished/paused, and with no live lease (includes crashed runs). */
+export function listRunnable(limit = 10): SessionRow[] {
+  return all(
+    "SELECT * FROM sessions WHERE run_requested = 1 AND status NOT IN ('COMPLETED','DRY_RUN_COMPLETE','STOPPED_BY_USER','STOPPED_BY_BUDGET','FAILED','PAUSED_ERROR') AND (lease_until IS NULL OR lease_until < ?) ORDER BY updated_at LIMIT ?",
+    nowIso(),
+    limit,
+  ).map(toSession);
+}
+
+/** Cheap change signature used by the SSE endpoint. */
+export function sessionSignature(id: string): string | null {
+  const s = get("SELECT updated_at, status, lease_until, run_requested FROM sessions WHERE id = ?", id);
+  if (!s) return null;
+  const c = get(
+    `SELECT (SELECT COUNT(*) FROM messages WHERE session_id = $id) AS m, (SELECT COUNT(*) FROM ai_usage WHERE session_id = $id) AS u,
+            (SELECT COUNT(*) FROM evidence WHERE session_id = $id) AS e, (SELECT COUNT(*) FROM issues WHERE session_id = $id) AS i,
+            (SELECT COALESCE(MAX(updated_at), '') FROM issues WHERE session_id = $id) AS iu, (SELECT COUNT(*) FROM reports WHERE session_id = $id) AS r,
+            (SELECT GROUP_CONCAT(task_key || ':' || status || ':' || IFNULL(progress_note, ''), '|') FROM tasks WHERE session_id = $id AND status IN ('RUNNING','FAILED')) AS t,
+            (SELECT COUNT(*) FROM tasks WHERE session_id = $id AND status = 'SUCCEEDED') AS ts`,
+    { $id: id } as unknown as SQLInputValue,
+  )!;
+  const live = s.lease_until && (s.lease_until as string) > nowIso() ? 1 : 0;
+  return [s.updated_at, s.status, live, s.run_requested, c.m, c.u, c.e, c.i, c.iu, c.r, c.t, c.ts].join("~");
 }
 
 export function createSession(input: { mode: SessionMode; settings: AppSettings; estimate?: unknown }): SessionRow {
@@ -787,6 +845,8 @@ export function getFinalReport<T = Record<string, unknown>>(sessionId: string): 
 
 export interface UsageRow {
   taskKey: string | null;
+  ticker: string | null;
+  inputEstimateBasis: string | null;
   agentRole: AgentRole | null;
   phase: string | null;
   model: string;
@@ -801,11 +861,13 @@ export interface UsageRow {
   createdAt: string;
 }
 
-export function insertUsage(sessionId: string, u: Omit<UsageRow, "createdAt">) {
+export function insertUsage(sessionId: string, u: Omit<UsageRow, "createdAt" | "ticker" | "inputEstimateBasis"> & { ticker?: string | null; inputEstimateBasis?: string | null }) {
   run(
-    "INSERT INTO ai_usage (session_id, task_key, agent_role, phase, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, est_cost_usd, cost_basis, stop_reason, request_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    "INSERT INTO ai_usage (session_id, task_key, ticker, input_estimate_basis, agent_role, phase, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, est_cost_usd, cost_basis, stop_reason, request_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
     sessionId,
     u.taskKey,
+    u.ticker ?? null,
+    u.inputEstimateBasis ?? null,
     u.agentRole,
     u.phase,
     u.model,
@@ -824,6 +886,8 @@ export function insertUsage(sessionId: string, u: Omit<UsageRow, "createdAt">) {
 export function listUsage(sessionId: string): UsageRow[] {
   return all("SELECT * FROM ai_usage WHERE session_id = ? ORDER BY id", sessionId).map((r) => ({
     taskKey: (r.task_key as string) ?? null,
+    ticker: (r.ticker as string) ?? null,
+    inputEstimateBasis: (r.input_estimate_basis as string) ?? null,
     agentRole: (r.agent_role as AgentRole) ?? null,
     phase: (r.phase as string) ?? null,
     model: r.model as string,

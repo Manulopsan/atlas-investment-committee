@@ -1,4 +1,4 @@
-import type { CompanyProfile, CompanyRef, FactRecord, FrameRow, FundamentalsProvider, FxProvider, MarketData, PriceProvider, Quote, ReferenceDataProvider, Sourced } from "./types";
+import type { CompanyProfile, CompanyRef, FactRecord, FrameRow, FundamentalsProvider, FxProvider, MarketData, PriceHistory, PriceHistoryProvider, PricePoint, PriceProvider, Quote, ReferenceDataProvider, Sourced } from "./types";
 
 /**
  * SYNTHETIC DEMO DATA. Fictitious companies with "DEMO-" tickers (the hyphen
@@ -84,14 +84,32 @@ export class SyntheticProvider implements ReferenceDataProvider, FundamentalsPro
     if (!c) throw new Error("Empresa sintética no encontrada");
     return wrap({
       cik, name: c.name, tickers: [c.ticker], exchanges: ["DEMO"], sic: c.sic, sicDescription: c.sicDescription, fiscalYearEnd: "1231",
-      recentFilings: [{ form: "10-K (SINTÉTICO)", filingDate: `${LAST_FY + 1}-02-20`, reportDate: `${LAST_FY}-12-31`, accession: `SYN-${c.ticker}-${LAST_FY}`, url: SYNTHETIC_URL(`${cik}/${LAST_FY}`), description: "Informe anual ficticio" }],
+      recentFilings: [{ form: "10-K", filingDate: `${LAST_FY + 1}-02-20`, reportDate: `${LAST_FY}-12-31`, accession: `SYN-${c.ticker}-${LAST_FY}`, url: SYNTHETIC_URL(`${cik}/${LAST_FY}`), documentUrl: SYNTHETIC_URL(`doc/${c.ticker}/${LAST_FY}`), description: "Informe anual ficticio (SINTÉTICO)" }],
     }, `profile/${cik}`);
   }
-  async annualFacts(cik: string): Promise<Sourced<FactRecord[]>> {
+  async annualFacts(cik: string, opts: { asOf?: string | null } = {}): Promise<Sourced<FactRecord[]>> {
     const c = SYN_COMPANIES.find((x) => synCik(x.ticker) === cik);
     if (!c) throw new Error("Empresa sintética no encontrada");
-    return wrap(synFacts(c), `facts/${cik}`);
+    return wrap(synFacts(c).filter((f) => !opts.asOf || f.filed <= opts.asOf), `facts/${cik}`);
   }
+  async filingDocument(url: string): Promise<Sourced<string>> {
+    const t = /doc\/([^/]+)\//.exec(url)?.[1];
+    const c = SYN_COMPANIES.find((x) => x.ticker === t);
+    if (!c) throw new Error("Documento sintético no encontrado");
+    const lev = c.debt / Math.max(c.revenue0 * c.opMargin, 1);
+    const html = `<html><body><p>TABLE OF CONTENTS</p><p>Item 1. Business</p><p>Item 1A. Risk Factors</p><p>Item 7. Management's Discussion and Analysis</p><hr/>
+<p>Item 1. Business</p><p>[SINTÉTICO] ${c.name} opera en ${c.sicDescription}. Este documento es ficticio y solo sirve para la demostración.</p><hr/>
+<p>Item 1A. Risk Factors</p>
+<p>[SINTÉTICO] Our indebtedness could adversely affect our financial condition; total long-term debt is ${(c.debt / 1e9).toFixed(1)} billion, about ${lev.toFixed(1)} times operating income.</p>
+<p>[SINTÉTICO] We depend on a limited number of customers; the loss of a major customer could reduce revenue and margins.</p>
+<p>[SINTÉTICO] Competition, including new products based on artificial intelligence, could pressure our pricing power.</p><hr/>
+<p>Item 7. Management's Discussion and Analysis of Financial Condition and Results of Operations</p>
+<p>[SINTÉTICO] Revenue grew ${(c.growth * 100).toFixed(0)}% and operating margin was ${(c.opMargin * 100).toFixed(0)}% in fiscal ${LAST_FY}.</p>
+<p>[SINTÉTICO] Free cash flow conversion remained stable; capital expenditures were ${(c.capexPct * 100).toFixed(0)}% of revenue.</p>
+<p>Item 8. Financial Statements</p><p>[SINTÉTICO] Ver datos XBRL sintéticos.</p></body></html>`;
+    return wrap(html, `doc/${c.ticker}`);
+  }
+
   async frame(concept: string, _unit: string, period: string): Promise<Sourced<FrameRow[]>> {
     const fy = Number(period.replace("CY", ""));
     const key = concept.includes("Revenue") ? "revenue" : concept.includes("Operating") && concept.includes("Income") ? "operatingIncome" : concept.includes("CashProvided") ? "operatingCashFlow" : null;
@@ -120,9 +138,41 @@ export class SyntheticFxProvider implements FxProvider {
   async usdPerEur() {
     return { pair: "EURUSD" as const, usdPerEur: SYN_FX.usdPerEur, date: SYN_FX.date, source: SYNTHETIC_SOURCE, url: SYNTHETIC_URL("fx"), retrievedAt: now() };
   }
+  async usdPerEurOn(date: string) {
+    return { pair: "EURUSD" as const, usdPerEur: 1.15, date, source: SYNTHETIC_SOURCE, url: SYNTHETIC_URL(`fx/${date}`), retrievedAt: now() };
+  }
+}
+
+/**
+ * Synthetic monthly prices 2015-01 … 2026-09 that end at the demo price and
+ * grow roughly with each company's revenue growth, plus a deterministic wobble.
+ */
+export function syntheticHistory(ticker: string): PriceHistory | null {
+  const c = SYN_COMPANIES.find((x) => x.ticker === ticker);
+  if (!c) return null;
+  const points: PricePoint[] = [];
+  const end = new Date(Date.UTC(2026, 8, 30));
+  const seed = ticker.split("").reduce((a, ch) => a + ch.charCodeAt(0), 0);
+  for (let m = 0; m <= 140; m++) {
+    const d = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth() - m + 1, 0));
+    const yearsBack = m / 12;
+    const wobble = 1 + 0.12 * Math.sin((m + seed) / 5);
+    const close = Math.round((c.price / Math.pow(1 + c.growth * 0.9, yearsBack)) * wobble * 100) / 100;
+    const divYield = (c.payout * c.opMargin * 0.78 * c.revenue0) / c.shares / c.price;
+    points.push({ date: d.toISOString().slice(0, 10), close, totalReturnClose: Math.round(close * Math.pow(1 + divYield, -yearsBack) * 100) / 100 });
+  }
+  points.sort((a, b) => a.date.localeCompare(b.date));
+  return { ticker, points, adjustment: "splits", frequency: "monthly", source: SYNTHETIC_SOURCE, url: SYNTHETIC_URL(`history/${ticker}`), retrievedAt: now(), note: "Serie de precios sintética de demostración" };
+}
+
+export class SyntheticHistoryProvider implements PriceHistoryProvider {
+  id = "synthetic-demo-history";
+  async history(ticker: string) {
+    return syntheticHistory(ticker);
+  }
 }
 
 export function syntheticMarketData(): MarketData {
   const p = new SyntheticProvider();
-  return { synthetic: true, reference: p, fundamentals: p, prices: [new SyntheticPriceProvider()], fx: new SyntheticFxProvider() };
+  return { synthetic: true, reference: p, fundamentals: p, prices: [new SyntheticPriceProvider()], history: [new SyntheticHistoryProvider()], fx: new SyntheticFxProvider() };
 }

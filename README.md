@@ -29,6 +29,40 @@ Comité de inversión autónomo de **cuatro agentes de IA** (Quality, Valuation,
 | **Persistencia y reanudación** | SQLite (`node:sqlite`, sin dependencias nativas). Las tareas completadas nunca se repiten; las que quedaron `RUNNING` tras un cierre se re-encolan. Los efectos de cada tarea se aplican en una transacción junto con su marca de éxito. |
 | **Exportación** | Informe final (Markdown), tabla comparativa (CSV), informes por agente, transcripción del debate, evidencias y fuentes, historial de puntuaciones; todas con fecha de corte, modelo, fuentes, limitaciones, estado de verificación y advertencia. Redacción de secretos. |
 
+## Novedades v2
+
+| Mejora | Qué hace | Dónde |
+|---|---|---|
+| **Worker separado + tiempo real** | Con `ATLAS_RUNNER=worker` la web solo encola y `npm run worker` ejecuta las sesiones en otro proceso. Cada sesión la ejecuta un único proceso que mantiene un *lease* en SQLite; si el worker muere, la sesión se retoma al expirar el lease sin repetir tareas completadas. El dashboard recibe los cambios por **Server-Sent Events** (con un sondeo lento como respaldo). | `scripts/worker.ts`, `src/lib/orchestrator/manager.ts`, `api/sessions/[id]/events` |
+| **Lectura de 10-K/10-Q** | Herramienta `read_filing_section`: descarga el documento principal del último 10-K (o 10-Q), localiza la sección real (no el índice) — Risk Factors, MD&A, Business, Legal Proceedings, Cybersecurity, Market Risk… — y devuelve pasajes **literales** citados como `Item 1A ¶12 · pág. ≈23`, cada uno registrado como evidencia verificada. | `src/lib/market-data/filings.ts`, `tools.ts` |
+| **Valoración histórica y comparables** | `get_historical_valuation`: PER, EV/EBIT y P/FCF al cierre de cada ejercicio con precios históricos públicos (Stooq; Alpha Vantage mensual ajustado si hay clave) → rango mín/mediana/máx. `get_peer_comparables`: mismas fórmulas para la empresa y los competidores que elija el agente, con mediana y aviso de ejercicios desalineados. | `prices.ts`, `tools.ts` |
+| **Recuento exacto de tokens** | Antes de cada llamada se usa el endpoint gratuito `count_tokens` de Anthropic para el chequeo de presupuesto (con respaldo heurístico). El uso se desglosa también **por empresa**. | `anthropic.ts`, `agentTask.ts`, `cost.ts` |
+| **Conciliación de cifras en texto libre** | Detecta porcentajes, importes y múltiplos escritos por los agentes en tesis y conclusiones y los concilia contra el registro de evidencias; las no conciliadas se muestran como tales. | `src/lib/evidence/reconcile.ts`, Research |
+| **Modo histórico (point-in-time)** | `asOfDate`: solo presentaciones a la SEC hechas hasta esa fecha (sin reexpresiones posteriores), precio de cierre de esa fecha, tipo EUR/USD del BCE de ese día, filtros de presentaciones y búsquedas, y sin cribado automático (evita sesgo de anticipación). | `config.ts`, `sec.ts`, `tools.ts`, `discovery.ts` |
+| **Evaluaciones (evals)** | Ejecuta el comité en casos históricos y compara con lo que pasó después: tasa de acierto de las compras, CAGR realizado por veredicto, correlación de Spearman puntuación↔rentabilidad, error del CAGR base, % dentro del rango bajista–alcista. Pantalla **H · Evals** e informe Markdown en `data/evals/`. | `src/lib/evals`, `scripts/eval.ts`, `evals/cases.example.json` |
+| **Autenticación opcional** | `ATLAS_BASIC_AUTH=usuario:contraseña` protege todas las rutas si expone la app fuera de su máquina. | `src/middleware.ts` |
+
+### Ejecutar con worker separado
+
+```bash
+# .env.local
+ATLAS_RUNNER=worker
+# terminal 1
+npm run dev        # o: npm run build && npm start
+# terminal 2
+npm run worker
+```
+
+### Evaluaciones
+
+```bash
+npm run eval -- --demo                                          # sintética, gratis: valida el arnés
+npm run eval -- --file evals/cases.example.json                 # solo muestra la estimación de coste
+npm run eval -- --file evals/cases.example.json --confirm-cost  # DE PAGO: un comité real por caso
+```
+
+Formato de un caso: `{ "name": "...", "asOf": "2021-06-30", "horizonYears": 3, "tickers": ["...", "..."] }`. Advertencias que acompañan siempre a los resultados: el modelo puede **recordar hechos posteriores** a la fecha de análisis (sesgo de anticipación que las herramientas no pueden eliminar), los tickers se eligen hoy (sesgo de selección), la rentabilidad es solo de precio si la fuente no ajusta dividendos, y las muestras pequeñas son diagnósticos, no prueba estadística.
+
 ## 2. Estructura de archivos
 
 ```
@@ -51,8 +85,12 @@ src/
     evidence/registry.ts       # Registro centralizado de evidencias
     finance/                   # returns, valuation, fundamentals, scoring (deterministas)
     orchestrator/              # runner (fases), agentTask (bucle de herramientas), tools, prompts, manager
+    evals/                     # Arnés de evaluación histórica (v2)
     export/  security/  view.ts api.ts
-tests/                         # 67 pruebas (Vitest)
+  middleware.ts                # Autenticación básica opcional (v2)
+scripts/worker.ts  scripts/eval.ts
+evals/cases.example.json
+tests/                         # 88 pruebas (Vitest)
 docs/screenshots/              # Capturas de una sesión DEMO (datos sintéticos)
 ```
 
@@ -83,6 +121,9 @@ La base de datos se crea en `./data/atlas.db` (configurable con `ATLAS_DB_PATH`)
 | `SEC_USER_AGENT` | Para datos reales | La SEC exige un User-Agent con contacto, p. ej. `Atlas Research tu@email.com`. |
 | `ALPHAVANTAGE_API_KEY` | No | Proveedor de precios alternativo (plan gratuito). La URL guardada se redacta. |
 | `ATLAS_DB_PATH` | No | Ruta del fichero SQLite. |
+| `ATLAS_RUNNER` | No | `inprocess` (por defecto) o `worker` (la web solo encola; ejecute `npm run worker`). |
+| `ATLAS_WORKER_CONCURRENCY` | No | Sesiones en paralelo en el worker (por defecto 1). |
+| `ATLAS_BASIC_AUTH` | No | `usuario:contraseña` para proteger la app si la expone en red. |
 
 `.env*` está en `.gitignore` (salvo `.env.example`).
 
@@ -115,7 +156,7 @@ Opcional: en Settings → *Universo* importe tickers por CSV (`ticker[,precio,fe
 ## 8. Resultado real de las comprobaciones (en este entorno)
 
 ```
-npm test           → Test Files 7 passed (7) · Tests 67 passed (67)
+npm test           → Test Files 8 passed (8) · Tests 88 passed (88)
 npm run typecheck  → sin errores
 npm run lint       → sin errores ni avisos
 npm run build      → compilación de producción correcta (Next.js 15.5)
@@ -123,7 +164,11 @@ npm run build      → compilación de producción correcta (Next.js 15.5)
 
 Las pruebas cubren los 15 requisitos: perfiles distintos (1), prompts de ronda 1 sin contenido ajeno y broker que deniega la lectura (2–3), debate bloqueado hasta 4 informes (4), mensajes persistidos y filtrables (5), objeciones → incidencias resueltas solo con evidencia (6), informes congelados inmutables y revisiones versionadas (7), matemáticas financieras (8), cifras sin fuente nunca verificadas + `verify_source` + guardia SSRF (9), límites de coste que detienen llamadas y parada controlada (10), errores sin pérdida de resultados y reintento individual (11), ranking con <5 y 0 empresas (12), exportaciones con cabecera y sin secretos (13), datos sintéticos aislados y sin tickers reales codificados en la UI (14), reanudación sin duplicar tareas (15), además de un flujo completo de extremo a extremo.
 
-Verificaciones manuales hechas: servidor de producción arrancado, sesión demo completa vía API HTTP (COMPLETED, 86 mensajes, 341 evidencias), análisis en seco, exportaciones, y capturas de todas las pantallas en claro/oscuro y a 390 px de ancho (sin desbordamiento horizontal ni errores de consola).
+Pruebas de la v2: conciliación de cifras, lector de secciones del 10-K (índice frente a sección real, párrafo y página), históricos de precios (Stooq, Alpha Vantage, BCE), múltiplos históricos y comparables, modo histórico (reexpresiones posteriores excluidas, precio a la fecha), *leases* del worker, firma de cambios del SSE, uso de `count_tokens` en el chequeo de presupuesto, arnés de evaluación completo y autenticación básica.
+
+Verificaciones manuales hechas (v2): web en modo `worker` encolando una sesión, `npm run worker` ejecutándola hasta COMPLETED, flujo SSE emitiendo eventos, `npm run eval -- --demo` completo y `npm run eval -- --file …` deteniéndose en la estimación sin `--confirm-cost`.
+
+Verificaciones manuales hechas (v1): servidor de producción arrancado, sesión demo completa vía API HTTP (COMPLETED, 86 mensajes, 341 evidencias), análisis en seco, exportaciones, y capturas de todas las pantallas en claro/oscuro y a 390 px de ancho (sin desbordamiento horizontal ni errores de consola).
 
 **Lo que NO se ha podido comprobar aquí:** la red de este entorno bloquea `sec.gov`, `stooq.com` y el BCE, y no había clave de Anthropic. Por tanto **no se ha consultado ningún dato financiero real ni se ha ejecutado ninguna llamada real al modelo**. Los proveedores están implementados contra las APIs públicas documentadas y probados con respuestas simuladas; el adaptador de Anthropic se probó solo hasta obtener un `401 authentication_error` con una clave inválida (confirma la ruta de la llamada, no el contenido). La primera ejecución real debería hacerse con un presupuesto bajo.
 
@@ -135,18 +180,21 @@ Verificaciones manuales hechas: servidor de producción arrancado, sesión demo 
 - `verify_source` comprueba coincidencia **literal** del fragmento citado; no interpreta tablas ni PDFs escaneados.
 - La resolución determinista de incidencias exige que la métrica y el periodo coincidan con un dato del 10-K; en otro caso pasa a verificación documental por un agente y, si no hay evidencia verificada, queda **pendiente**.
 - La estimación previa de coste es heurística; el control duro es el chequeo previo a cada llamada.
-- Las sesiones se ejecutan en el proceso del servidor Next.js (aplicación local de un solo usuario); si se cierra, la sesión queda *interrumpida* y se reanuda desde la última tarea completada.
+- En modo `inprocess` (por defecto) las sesiones corren dentro del servidor web: si se cierra, la sesión queda *interrumpida* y se reanuda con un clic desde la última tarea completada. En modo `worker` el worker la retoma solo al expirar su *lease*.
+- Las páginas de las citas de 10-K son **aproximadas** (se cuentan los saltos de página del HTML); las secciones se localizan por los títulos "Item 1A", "Item 7"…, que algunos emisores formatean de forma atípica.
+- Stooq no documenta si su histórico está ajustado por *splits*/dividendos: los múltiplos históricos se marcan con confianza media.
+- El modo histórico no puede impedir que el modelo **recuerde** lo ocurrido después de la fecha de análisis; las evaluaciones lo advierten siempre.
 - `node:sqlite` es experimental en Node 22 (estable en versiones posteriores).
 
-## 10. Mejoras recomendadas para una v2
+## 10. Mejoras recomendadas (siguiente versión)
 
-1. Cola de trabajos persistente separada del servidor web (worker) y notificaciones en tiempo real (SSE) en lugar de *polling*.
-2. Descarga y lectura de los documentos 10-K/10-Q completos (secciones *Risk Factors*, MD&A) con citas por página, y comparables sectoriales automáticos.
-3. Fuente de precios con licencia clara y precios de cierre ajustados históricos para valoración histórica (rangos de PER/EV-EBIT).
-4. Uso de la API de recuento de tokens antes de cada llamada para afinar el peor caso, y tablero de coste por empresa.
-5. Detección automática de cifras citadas en texto libre por los agentes y conciliación contra el registro.
-6. Evaluaciones (*evals*) del comité sobre casos históricos con resultados conocidos.
-7. Multiusuario con autenticación si se despliega fuera de la máquina local.
+Las siete mejoras propuestas para la v2 están implementadas (ver *Novedades v2*). Pendiente para una v3:
+
+1. Lectura de PDFs escaneados y tablas de los 10-K (hoy solo HTML con texto).
+2. Una fuente de precios históricos con licencia explícita para uso comercial y con ajuste por *splits* documentado.
+3. Multiusuario real (cuentas y permisos), más allá de la autenticación básica compartida.
+4. Evaluaciones con muestras amplias elegidas por reglas fijadas de antemano, para reducir el sesgo de selección, y repetidas con distintos modelos.
+5. Tablero de coste por empresa con previsión del gasto restante.
 
 ---
 

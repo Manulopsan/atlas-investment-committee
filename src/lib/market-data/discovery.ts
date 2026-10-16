@@ -122,7 +122,10 @@ export async function discoverCandidates(md: MarketData, config: InvestmentConfi
 
   let screened: ScreenRow[] = [];
   let frameYear = now.getUTCFullYear() - 1;
-  if (!config.userTickersOnly && companies.length) {
+  // Point-in-time mode: XBRL frames include later restatements, so automatic screening would leak future data.
+  const pit = Boolean(config.asOfDate) && !md.synthetic;
+  if (pit) limitations.push(`Modo histórico (${config.asOfDate}): sin cribado automático para evitar sesgo de anticipación; solo se analizan los tickers indicados.`);
+  if (!config.userTickersOnly && !pit && companies.length) {
     for (let attempt = 0; attempt < 2 && !screened.length; attempt++) {
       const fy = now.getUTCFullYear() - 1 - attempt;
       const revenue = await firstFrame(md, SCREEN_FRAMES.revenue, "USD", fy, log);

@@ -251,6 +251,18 @@ CREATE TABLE IF NOT EXISTS agent_notes (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS evals (
+  id TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL,
+  name TEXT NOT NULL,
+  mode TEXT NOT NULL,
+  status TEXT NOT NULL,
+  cases_json TEXT NOT NULL,
+  results_json TEXT,
+  metrics_json TEXT,
+  error TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, id);
 CREATE INDEX IF NOT EXISTS idx_evidence_session ON evidence(session_id, ticker, metric);
 CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id, phase);
@@ -259,10 +271,31 @@ CREATE INDEX IF NOT EXISTS idx_usage_session ON ai_usage(session_id);
 
 let instance: DatabaseSync | null = null;
 
+/** Additive migrations for databases created by earlier versions (idempotent). */
+const MIGRATIONS: string[] = [
+  "ALTER TABLE ai_usage ADD COLUMN ticker TEXT",
+  "ALTER TABLE ai_usage ADD COLUMN input_estimate_basis TEXT",
+  "ALTER TABLE sessions ADD COLUMN run_requested INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE sessions ADD COLUMN lease_owner TEXT",
+  "ALTER TABLE sessions ADD COLUMN lease_until TEXT",
+];
+
+function migrate(db: DatabaseSync) {
+  for (const m of MIGRATIONS) {
+    try {
+      db.exec(m);
+    } catch (e) {
+      if (!/duplicate column/i.test(String((e as Error).message))) throw e;
+    }
+  }
+}
+
 export function openDb(file: string): DatabaseSync {
   if (file !== ":memory:") fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
+  db.exec("PRAGMA busy_timeout = 5000;");
   db.exec(SCHEMA);
+  migrate(db);
   return db;
 }
 

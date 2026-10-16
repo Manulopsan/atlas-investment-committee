@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { AGENT_ROLES, MESSAGE_TYPES, VERDICTS, type AgentRole } from "../types";
 import { PROFILES } from "./profiles";
+import type { Reconciliation } from "../evidence/reconcile";
 
 /**
  * Structured outputs of every agent task. The model submits them through a
@@ -110,6 +111,8 @@ export interface StoredReport extends InitialReportT {
   model: string;
   totals: Record<string, number>;
   citation_check: Record<string, { verified: string[]; unverified: string[]; missing: string[] }>;
+  /** Figures written in free text, reconciled against the evidence registry. */
+  reconciliation?: Record<string, Reconciliation>;
 }
 
 export const FactualDispute = z.object({
@@ -234,6 +237,7 @@ export interface StoredRevision {
     original_total: number | null;
     revised_total: number;
     original_conclusion: string | null;
+    reconciliation?: Reconciliation;
   })[];
   vetoes?: VetoT[];
 }

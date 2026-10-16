@@ -1,4 +1,4 @@
-import type { FxProvider, FxRate, PriceProvider, Quote } from "./types";
+import type { FxProvider, FxRate, PriceHistory, PriceHistoryProvider, PriceProvider, Quote } from "./types";
 
 /**
  * Stooq public CSV quote (free, no key). Quotes are delayed and may be the
@@ -126,6 +126,17 @@ export class EcbFxProvider implements FxProvider {
     return { pair: "EURUSD", usdPerEur: v, date, source: "BCE — tipos de cambio de referencia del euro", url: EcbFxProvider.URL, retrievedAt };
   }
 
+  async usdPerEurOn(date: string): Promise<FxRate | null> {
+    const url = ecbHistoryUrl(date);
+    try {
+      const res = await this.fetchImpl(url, { headers: { Accept: "text/csv" } });
+      if (!res.ok) return null;
+      return parseEcbCsv(await res.text(), url, new Date().toISOString());
+    } catch {
+      return null;
+    }
+  }
+
   async usdPerEur(): Promise<FxRate | null> {
     try {
       const res = await this.fetchImpl(EcbFxProvider.URL);
@@ -135,4 +146,84 @@ export class EcbFxProvider implements FxProvider {
       return null;
     }
   }
+}
+
+/** Stooq daily history (CSV). Stooq does not document its adjustment policy: marked "unknown". */
+export class StooqHistoryProvider implements PriceHistoryProvider {
+  id = "stooq-history";
+  constructor(private fetchImpl: typeof fetch = fetch) {}
+  static url(ticker: string) {
+    return `https://stooq.com/q/d/l/?s=${encodeURIComponent(ticker.toLowerCase().replace(/\./g, "-") + ".us")}&i=d`;
+  }
+  static parse(ticker: string, csv: string, url: string, retrievedAt: string): PriceHistory | null {
+    const lines = csv.trim().split(/\r?\n/);
+    const header = lines[0]?.toLowerCase().split(",") ?? [];
+    const di = header.indexOf("date");
+    const ci = header.indexOf("close");
+    if (di < 0 || ci < 0) return null;
+    const points = lines.slice(1).map((l) => l.split(",")).map((c) => ({ date: c[di], close: Number(c[ci]) })).filter((p) => /^\d{4}-\d{2}-\d{2}$/.test(p.date) && p.close > 0);
+    if (!points.length) return null;
+    points.sort((a, b) => a.date.localeCompare(b.date));
+    return { ticker, points, adjustment: "unknown", frequency: "daily", source: "Stooq (histórico diario, público)", url, retrievedAt, note: "Stooq no documenta si la serie está ajustada por splits/dividendos: compare múltiplos históricos con cautela." };
+  }
+  async history(ticker: string): Promise<PriceHistory | null> {
+    const url = StooqHistoryProvider.url(ticker);
+    try {
+      const res = await this.fetchImpl(url);
+      if (!res.ok) return null;
+      return StooqHistoryProvider.parse(ticker, await res.text(), url, new Date().toISOString());
+    } catch {
+      return null;
+    }
+  }
+}
+
+/** Alpha Vantage TIME_SERIES_MONTHLY_ADJUSTED (free tier): raw close + total-return adjusted close. */
+export class AlphaVantageHistoryProvider implements PriceHistoryProvider {
+  id = "alphavantage-history";
+  constructor(private apiKey: string, private fetchImpl: typeof fetch = fetch) {}
+  static parse(ticker: string, json: unknown, retrievedAt: string): PriceHistory | null {
+    const series = (json as Record<string, Record<string, Record<string, string>>>)?.["Monthly Adjusted Time Series"];
+    if (!series) return null;
+    const points = Object.entries(series)
+      .map(([date, v]) => ({ date, close: Number(v["4. close"]), totalReturnClose: Number(v["5. adjusted close"]) || null }))
+      .filter((p) => p.close > 0)
+      .sort((a, b) => a.date.localeCompare(b.date));
+    if (!points.length) return null;
+    return {
+      ticker, points, adjustment: "none", frequency: "monthly", source: "Alpha Vantage TIME_SERIES_MONTHLY_ADJUSTED",
+      url: `https://www.alphavantage.co/query?function=TIME_SERIES_MONTHLY_ADJUSTED&symbol=${encodeURIComponent(ticker)}&apikey=REDACTED`, retrievedAt,
+      note: "Cierre mensual sin ajustar (para múltiplos) y cierre ajustado por dividendos y splits (para rentabilidad total).",
+    };
+  }
+  async history(ticker: string): Promise<PriceHistory | null> {
+    if (!this.apiKey) return null;
+    try {
+      const res = await this.fetchImpl(`https://www.alphavantage.co/query?function=TIME_SERIES_MONTHLY_ADJUSTED&symbol=${encodeURIComponent(ticker)}&apikey=${encodeURIComponent(this.apiKey)}`);
+      if (!res.ok) return null;
+      return AlphaVantageHistoryProvider.parse(ticker, await res.json(), new Date().toISOString());
+    } catch {
+      return null;
+    }
+  }
+}
+
+/** ECB Data Portal (official SDMX API) for historical EUR/USD reference rates. */
+export function ecbHistoryUrl(date: string) {
+  const end = new Date(Date.parse(date));
+  const start = new Date(end.getTime() - 10 * 86_400_000);
+  const f = (d: Date) => d.toISOString().slice(0, 10);
+  return `https://data-api.ecb.europa.eu/service/data/EXR/D.USD.EUR.SP00.A?startPeriod=${f(start)}&endPeriod=${f(end)}&format=csvdata`;
+}
+
+export function parseEcbCsv(csv: string, url: string, retrievedAt: string): FxRate | null {
+  const lines = csv.trim().split(/\r?\n/);
+  const h = lines[0]?.split(",") ?? [];
+  const ti = h.indexOf("TIME_PERIOD");
+  const vi = h.indexOf("OBS_VALUE");
+  if (ti < 0 || vi < 0) return null;
+  const rows = lines.slice(1).map((l) => l.split(",")).filter((c) => Number(c[vi]) > 0).sort((a, b) => a[ti].localeCompare(b[ti]));
+  const last = rows[rows.length - 1];
+  if (!last) return null;
+  return { pair: "EURUSD", usdPerEur: Number(last[vi]), date: last[ti], source: "BCE — Data Portal (EXR)", url, retrievedAt };
 }
