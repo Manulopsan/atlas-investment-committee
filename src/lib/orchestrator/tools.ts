@@ -95,8 +95,24 @@ export async function priceHistory(ctx: ToolContext, ticker: string): Promise<Pr
   return m.get(ticker)!;
 }
 
-/** Reference quote: the latest quote, or — in point-in-time mode — the historical close on/before the analysis date. */
-export async function referenceQuote(ctx: ToolContext, ticker: string): Promise<{ q: Quote; providerId: string } | null> {
+/** A second source's quote for the same ticker, used to corroborate the reference price. */
+export interface Corroboration {
+  source: string;
+  price: number;
+  asOf: string;
+  /** Relative difference vs. the reference price. */
+  diff: number;
+}
+
+/** Above this relative gap between two sources the price is flagged as a data conflict. */
+export const PRICE_TOLERANCE = 0.02;
+
+/**
+ * Reference quote: the latest quote (first provider that answers, checked
+ * against the next one), or — in point-in-time mode — the historical close
+ * on/before the analysis date.
+ */
+export async function referenceQuote(ctx: ToolContext, ticker: string): Promise<{ q: Quote; providerId: string; corroboration?: Corroboration | null } | null> {
   const asOf = asOfDate(ctx);
   if (asOf) {
     const h = await priceHistory(ctx, ticker);
@@ -107,20 +123,34 @@ export async function referenceQuote(ctx: ToolContext, ticker: string): Promise<
       q: { ticker, price: p.close, currency: "USD", asOf: p.date, kind: "CLOSE", delayNote: `Cierre histórico (${h.frequency === "monthly" ? "mensual" : "diario"}) a la fecha de análisis ${asOf}. ${h.note}`, source: h.source, url: h.url, retrievedAt: h.retrievedAt },
     };
   }
-  for (const p of ctx.md.prices) {
-    const q = await p.quote(ticker).catch(() => null);
-    if (q) return { q, providerId: p.id };
+  const providers = ctx.md.prices;
+  for (let i = 0; i < providers.length; i++) {
+    const q = await providers[i].quote(ticker).catch(() => null);
+    if (!q) continue;
+    if (q.kind === "USER_SUPPLIED") return { q, providerId: providers[i].id, corroboration: null };
+    for (const other of providers.slice(i + 1)) {
+      const c = await other.quote(ticker).catch(() => null);
+      if (!c || c.kind === "USER_SUPPLIED") continue;
+      return { q, providerId: providers[i].id, corroboration: { source: c.source, price: c.price, asOf: c.asOf, diff: Math.abs(c.price - q.price) / q.price } };
+    }
+    return { q, providerId: providers[i].id, corroboration: null };
   }
   return null;
 }
 
-function registerQuote(ctx: ToolContext, ticker: string, r: { q: Quote; providerId: string }): Evidence {
+export function registerQuote(ctx: ToolContext, ticker: string, r: { q: Quote; providerId: string; corroboration?: Corroboration | null }): Evidence {
   const q = r.q;
   const userSupplied = q.kind === "USER_SUPPLIED";
+  const c = r.corroboration;
+  // Two independent public sources that agree → high confidence; a gap is kept visible, never averaged away.
+  const confidence = userSupplied ? "LOW" : c && c.diff <= PRICE_TOLERANCE ? "HIGH" : c ? "LOW" : "MEDIUM";
+  const reason = c
+    ? `${q.delayNote} Contrastado con ${c.source}: ${c.price} USD (${c.asOf}), diferencia ${(c.diff * 100).toFixed(2)} %${c.diff > PRICE_TOLERANCE ? " — DISCREPANCIA entre fuentes" : ""}.`
+    : `${q.delayNote}${userSupplied ? "" : " Sin segunda fuente para contrastar."}`;
   return addEvidence(ctx.sessionId, {
     ticker, metric: "price", value: q.price, unit: "USD/share", period: q.asOf, periodType: "POINT", publishedAt: q.asOf, retrievedAt: q.retrievedAt,
     source: q.source, url: q.url || null, dataType: userSupplied ? "UNVERIFIED" : "REPORTED", verification: userSupplied || !q.url ? "UNVERIFIED" : "VERIFIED",
-    priceKind: q.kind, confidence: userSupplied ? "LOW" : "MEDIUM", confidenceReason: q.delayNote, createdBy: userSupplied ? "user:csv" : `system:${r.providerId}`, synthetic: ctx.md.synthetic,
+    priceKind: q.kind, confidence, confidenceReason: reason, createdBy: userSupplied ? "user:csv" : `system:${r.providerId}`, synthetic: ctx.md.synthetic,
   });
 }
 
@@ -219,7 +249,7 @@ const getPrice = defineTool({
       });
       mc = `\nCapitalización aproximada: ${fmt(mcEv.value, "USD")} [${shortId(mcEv.id)}]`;
     }
-    return `${ticker}: ${q.price} USD (${q.kind}) a ${q.asOf} — ${q.source}. ${q.delayNote} [${shortId(ev.id)}; ${ev.verification}]${mc}`;
+    return `${ticker}: ${q.price} USD (${q.kind}) a ${q.asOf} — ${q.source}. ${ev.confidenceReason} [${shortId(ev.id)}; ${ev.verification}; confianza ${ev.confidence}]${mc}`;
   },
 });
 

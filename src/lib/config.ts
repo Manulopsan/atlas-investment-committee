@@ -4,8 +4,33 @@ import { z } from "zod";
  * Investment objective. Editable from the dashboard and frozen into each
  * session when it starts, so a session is always reproducible from its config.
  */
-export const SECTOR_EXCLUSIONS = ["BANKS", "INSURANCE", "TELECOM", "SHELL_COMPANIES"] as const;
+export const SECTOR_EXCLUSIONS = ["BANKS", "INSURANCE", "TELECOM", "SHELL_COMPANIES", "REITS"] as const;
 export type SectorExclusion = (typeof SECTOR_EXCLUSIONS)[number];
+
+/**
+ * Initial screening (deterministic, before any AI): hard filters, then a
+ * percentile composite of quality and valuation metrics. Weights are relative
+ * (they do not need to add up to 1); a weight of 0 ignores the metric.
+ */
+export const ScreeningCriteriaSchema = z.object({
+  minRevenueUsd: z.number().min(0).default(100e6),
+  minOperatingMargin: z.number().min(-1).max(1).default(0.08),
+  minOcfMargin: z.number().min(-1).max(1).default(0.08),
+  minRevenueCagr3y: z.number().min(-1).max(5).default(0.02),
+  maxRevenueCagr3y: z.number().min(-1).max(5).default(0.6),
+  /** Free-cash-flow yield (OCF − capex) / market cap. Applied only when market caps are available. */
+  minFcfYield: z.number().min(-1).max(1).default(0.02),
+  weights: z
+    .object({
+      operatingMargin: z.number().min(0).max(10).default(1),
+      ocfMargin: z.number().min(0).max(10).default(1),
+      revenueGrowth: z.number().min(0).max(10).default(1),
+      fcfYield: z.number().min(0).max(10).default(1.5),
+      earningsYield: z.number().min(0).max(10).default(0.5),
+    })
+    .default({ operatingMargin: 1, ocfMargin: 1, revenueGrowth: 1, fcfYield: 1.5, earningsYield: 0.5 }),
+});
+export type ScreeningCriteria = z.infer<typeof ScreeningCriteriaSchema>;
 
 export const InvestmentConfigSchema = z.object({
   market: z.literal("US").default("US"),
@@ -18,7 +43,7 @@ export const InvestmentConfigSchema = z.object({
   presentationCurrency: z.literal("USD").default("USD"),
   alternativeCurrency: z.literal("EUR").default("EUR"),
   maxFinalists: z.number().int().min(0).max(5).default(5),
-  excludedSectors: z.array(z.enum(SECTOR_EXCLUSIONS)).default(["BANKS", "INSURANCE", "TELECOM", "SHELL_COMPANIES"]),
+  excludedSectors: z.array(z.enum(SECTOR_EXCLUSIONS)).default(["BANKS", "INSURANCE", "TELECOM", "SHELL_COMPANIES", "REITS"]),
   riskTolerance: z.enum(["low", "moderate", "high"]).default("moderate"),
   /** Required discount of entry price vs. central fair value. */
   requiredMarginOfSafety: z.number().min(0).max(0.8).default(0.2),
@@ -35,6 +60,7 @@ export const InvestmentConfigSchema = z.object({
    * quoted on or before this date are used. Used by the evaluation harness.
    */
   asOfDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().default(null),
+  screening: ScreeningCriteriaSchema.default(ScreeningCriteriaSchema.parse({})),
   /** How many screened companies are handed to the agents in round 1. */
   maxCandidates: z.number().int().min(1).max(30).default(10),
   /** How many companies go through the structured per-company debate. */
@@ -45,6 +71,12 @@ export const InvestmentConfigSchema = z.object({
   largeCapMinUsd: z.number().default(10e9),
 });
 export type InvestmentConfig = z.infer<typeof InvestmentConfigSchema>;
+
+/** Screening criteria of a (possibly older, frozen) session config, with defaults for anything missing. */
+export function screeningCriteria(c: Pick<InvestmentConfig, "screening"> | { screening?: unknown }): ScreeningCriteria {
+  const r = ScreeningCriteriaSchema.safeParse(c.screening ?? {});
+  return r.success ? r.data : ScreeningCriteriaSchema.parse({});
+}
 
 export const LimitsSchema = z.object({
   /** Full debate rounds: round 2 (debate) and round 4 (selective debate). */
@@ -117,7 +149,8 @@ export const AppSettingsSchema = z.object({
   pricingNote: z.string().default("Tabla por defecto — verifique en https://www.anthropic.com/pricing"),
   limits: LimitsSchema.default(LimitsSchema.parse({})),
   investment: InvestmentConfigSchema.default(InvestmentConfigSchema.parse({})),
-  priceProvider: z.enum(["stooq", "alphavantage", "manual"]).default("stooq"),
+  /** "auto": Yahoo Finance → Nasdaq.com → Stooq. "stooq" (old saved settings) now means "auto": Stooq alone no longer serves data. */
+  priceProvider: z.preprocess((v) => (v === "stooq" ? "auto" : v), z.enum(["auto", "alphavantage", "manual"]).default("auto")),
   fxProvider: z.enum(["ecb", "none"]).default("ecb"),
   refreshFrequency: z.enum(["manual", "daily", "weekly"]).default("manual"),
 });

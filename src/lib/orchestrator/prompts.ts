@@ -24,18 +24,36 @@ function pctOrNd(v: unknown) {
   return typeof v === "number" ? `${(v * 100).toFixed(1)}%` : "n/d";
 }
 
-export function candidatesBlock(cands: CandidateRow[]): string {
+/** Reference price registered by the system right after discovery (so every agent starts from the same verified quote). */
+export interface CandidatePrice {
+  value: number;
+  asOf: string | null;
+  source: string;
+  evidenceId: string;
+  confidence: string;
+}
+
+const bigUsd = (v: unknown) => (typeof v === "number" ? (v >= 1e9 ? `${(v / 1e9).toFixed(1)} B$` : `${(v / 1e6).toFixed(0)} M$`) : "n/d");
+
+export function candidatesBlock(cands: CandidateRow[], prices: Record<string, CandidatePrice | null> = {}): string {
   if (!cands.length) return "No hay candidatas.";
   return [
-    "CANDIDATAS (cribado determinista con datos XBRL; las métricas de cribado son orientativas — confírmalas con get_company_financials):",
+    "CANDIDATAS (cribado determinista con datos XBRL de la SEC y capitalizaciones de mercado; las métricas de cribado son orientativas — confírmalas con get_company_financials):",
     ...cands.map((c) => {
       const s = (c.screen ?? {}) as Record<string, unknown>;
-      return `- ${c.ticker} | ${c.name ?? ""} | ${c.exchange ?? ""} | SIC ${c.sic ?? "n/d"} ${c.sector ?? ""} | origen ${c.source}${c.screen ? ` | margen op. ${pctOrNd(s.opMargin)}, margen FCO ${pctOrNd(s.ocfMargin)}, CAGR ingresos 3a ${pctOrNd(s.revenueCagr3y)}, puntuación cribado ${s.screenScore ?? "n/d"}` : ""}`;
+      const p = prices[c.ticker];
+      const screen = c.screen
+        ? ` | margen op. ${pctOrNd(s.opMargin)}, margen FCO ${pctOrNd(s.ocfMargin)}, CAGR ingresos 3a ${pctOrNd(s.revenueCagr3y)}` +
+          (s.marketCap ? `, capitalización ${bigUsd(s.marketCap)} (${s.capSegment ?? "n/d"}), rentabilidad FCF ${pctOrNd(s.fcfYield)}, rentabilidad EBIT ${pctOrNd(s.earningsYield)}` : "") +
+          `, puntuación cribado ${s.screenScore ?? "n/d"}`
+        : "";
+      const price = p ? ` | precio de referencia ${p.value} USD (${p.asOf ?? "s/f"}, ${p.source}, confianza ${p.confidence}) [${p.evidenceId}]` : " | precio de referencia: no disponible — intenta get_price";
+      return `- ${c.ticker} | ${c.name ?? ""} | ${c.exchange ?? ""} | SIC ${c.sic ?? "n/d"} ${c.sector ?? ""} | origen ${c.source}${screen}${price}`;
     }),
   ].join("\n");
 }
 
-export function round1Prompt(role: AgentRole, config: InvestmentConfig, cands: CandidateRow[], notes: string[]): string {
+export function round1Prompt(role: AgentRole, config: InvestmentConfig, cands: CandidateRow[], notes: string[], prices: Record<string, CandidatePrice | null> = {}): string {
   const p = PROFILES[role];
   const task =
     role === "CIO"
@@ -45,7 +63,7 @@ export function round1Prompt(role: AgentRole, config: InvestmentConfig, cands: C
     "FASE: RONDA 1 — ANÁLISIS INDEPENDIENTE.",
     "Trabajas de forma independiente: no tienes acceso (ni debes intentar acceder) a las conclusiones de los otros tres agentes.",
     objectiveBlock(config),
-    candidatesBlock(cands),
+    candidatesBlock(cands, prices),
     notes.length ? `TUS NOTAS DE TRABAJO PRIVADAS:\n${notes.map((n) => `- ${n}`).join("\n")}` : "",
     task,
     "Usa las herramientas para obtener datos: get_company_financials, get_price, get_company_profile, read_filing_section (texto literal del 10-K: risk_factors, mda, business, legal_proceedings…), get_historical_valuation (múltiplos históricos propios), get_peer_comparables (comparables con los competidores que elijas), search_sec_filings, verify_source, compute_valuation y compute_dcf. Prioriza calidad sobre cantidad: analiza a fondo las candidatas más relevantes; puedes descartar candidatas indicando el motivo en las conclusiones.",

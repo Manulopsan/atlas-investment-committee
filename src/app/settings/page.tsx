@@ -2,7 +2,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { api } from "@/components/hooks";
 import { Badge, Button, Card, ErrorBox, Notice } from "@/components/ui";
-import { SECTOR_EXCLUSIONS, type AppSettings } from "@/lib/config";
+import { ScreeningCriteriaSchema, SECTOR_EXCLUSIONS, type AppSettings, type ScreeningCriteria } from "@/lib/config";
 
 interface Env {
   claudeLoginAvailable: boolean;
@@ -27,7 +27,26 @@ function Num({ value, onChange, step = 1, min, max }: { value: number; onChange:
   return <input type="number" className={input} value={Number.isFinite(value) ? value : ""} step={step} min={min} max={max} onChange={(e) => onChange(Number(e.target.value))} />;
 }
 
-const EXCL_LABEL: Record<string, string> = { BANKS: "Bancos", INSURANCE: "Aseguradoras", TELECOM: "Telecomunicaciones", SHELL_COMPANIES: "SPAC / sociedades instrumentales" };
+/** Edits a fraction (0.08) as a percentage (8). */
+function Pct({ value, onChange, step = 1, min, max }: { value: number; onChange: (n: number) => void; step?: number; min?: number; max?: number }) {
+  const shown = Number.isFinite(value) ? Math.round(value * 10000) / 100 : NaN;
+  return (
+    <div className="flex items-center gap-1">
+      <Num value={shown} step={step} min={min} max={max} onChange={(n) => onChange(n / 100)} />
+      <span className="text-xs text-ink-3">%</span>
+    </div>
+  );
+}
+
+const WEIGHT_LABELS: Record<keyof ScreeningCriteria["weights"], string> = {
+  operatingMargin: "Margen operativo",
+  ocfMargin: "Margen de flujo operativo",
+  revenueGrowth: "Crecimiento de ingresos (3 años)",
+  fcfYield: "Rentabilidad FCF (FCF / capitalización)",
+  earningsYield: "Rentabilidad EBIT (EBIT / capitalización)",
+};
+
+const EXCL_LABEL: Record<string, string> = { BANKS: "Bancos", INSURANCE: "Aseguradoras", TELECOM: "Telecomunicaciones", SHELL_COMPANIES: "SPAC / sociedades instrumentales", REITS: "REIT (inmobiliarias cotizadas)" };
 
 export default function SettingsPage() {
   const [s, setS] = useState<AppSettings | null>(null);
@@ -70,6 +89,12 @@ export default function SettingsPage() {
     }
   };
   const inv = s.investment;
+  const sc = inv.screening ?? ScreeningCriteriaSchema.parse({});
+  const upSc = (f: (c: ScreeningCriteria) => void) => up((d) => {
+    d.investment.screening = structuredClone(d.investment.screening ?? ScreeningCriteriaSchema.parse({}));
+    f(d.investment.screening);
+  });
+  const wSum = Object.values(sc.weights).reduce((a, b) => a + b, 0);
   const L = s.limits;
   const models = Object.keys(s.pricing);
   return (
@@ -175,11 +200,33 @@ export default function SettingsPage() {
             <p className="text-xs text-ink-2">Tickers del usuario ({inv.userTickers.length}): {inv.userTickers.join(", ") || "ninguno"}</p>
           </div>
         </Card>
+        <Card title="Criterios del cribado inicial" actions={<Button onClick={() => up((d) => void (d.investment.screening = ScreeningCriteriaSchema.parse({})))}>Restaurar valores por defecto</Button>}>
+          <p className="mb-3 text-xs text-ink-2">
+            Antes de cualquier llamada a la IA se criba todo el universo de la SEC con datos XBRL y las capitalizaciones de mercado. Primero se aplican los filtros; las que los superan se ordenan por la combinación ponderada de métricas, y las mejores pasan al comité.
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Ingresos mínimos (millones de USD)"><Num value={sc.minRevenueUsd / 1e6} step={50} min={0} onChange={(n) => upSc((c) => void (c.minRevenueUsd = n * 1e6))} /></Field>
+            <Field label="Margen operativo mínimo"><Pct value={sc.minOperatingMargin} onChange={(n) => upSc((c) => void (c.minOperatingMargin = n))} /></Field>
+            <Field label="Margen de flujo operativo mínimo"><Pct value={sc.minOcfMargin} onChange={(n) => upSc((c) => void (c.minOcfMargin = n))} /></Field>
+            <Field label="Rentabilidad FCF mínima" hint="(Flujo operativo − capex) / capitalización."><Pct value={sc.minFcfYield} step={0.5} onChange={(n) => upSc((c) => void (c.minFcfYield = n))} /></Field>
+            <Field label="Crecimiento anual de ingresos mínimo (3 años)"><Pct value={sc.minRevenueCagr3y} onChange={(n) => upSc((c) => void (c.minRevenueCagr3y = n))} /></Field>
+            <Field label="Crecimiento anual de ingresos máximo" hint="Evita saltos por adquisiciones o bases muy pequeñas."><Pct value={sc.maxRevenueCagr3y} step={5} onChange={(n) => upSc((c) => void (c.maxRevenueCagr3y = n))} /></Field>
+          </div>
+          <div className="mt-3 text-xs font-semibold text-ink-2">Pesos del ranking (relativos; 0 = no se usa)</div>
+          <div className="mt-1 grid grid-cols-2 gap-3">
+            {(Object.keys(WEIGHT_LABELS) as (keyof ScreeningCriteria["weights"])[]).map((k) => (
+              <Field key={k} label={`${WEIGHT_LABELS[k]} · ${wSum > 0 ? Math.round((sc.weights[k] / wSum) * 100) : 0} %`}>
+                <Num value={sc.weights[k]} step={0.5} min={0} max={10} onChange={(n) => upSc((c) => void (c.weights[k] = n))} />
+              </Field>
+            ))}
+          </div>
+          <p className="mt-2 text-[11px] text-ink-3">El segmento por capitalización (large ≥ {inv.largeCapMinUsd / 1e9} B$, mid ≥ {inv.midCapMinUsd / 1e9} B$, small ≥ {inv.smallCapMinUsd / 1e6} M$) se filtra con las casillas de «Universo y descubrimiento».</p>
+        </Card>
         <Card title="Proveedores de datos">
           <div className="grid grid-cols-2 gap-3">
             <Field label="Fundamentales y universo"><input className={input} value="SEC EDGAR (XBRL companyfacts, frames, submissions)" disabled /></Field>
-            <Field label="Precios" hint="Stooq: gratuito, retrasado. Alpha Vantage: requiere clave gratuita.">
-              <select className={input} value={s.priceProvider} onChange={(e) => up((d) => void (d.priceProvider = e.target.value as AppSettings["priceProvider"]))}><option value="stooq">Stooq (retrasado)</option><option value="alphavantage">Alpha Vantage + Stooq</option><option value="manual">Solo precios del usuario (no verificados)</option></select>
+            <Field label="Precios" hint="Fuentes públicas gratuitas y retrasadas. Cada precio se contrasta con una segunda fuente.">
+              <select className={input} value={s.priceProvider} onChange={(e) => up((d) => void (d.priceProvider = e.target.value as AppSettings["priceProvider"]))}><option value="auto">Automático: Yahoo Finance + Nasdaq (contraste) + Stooq</option><option value="alphavantage">Alpha Vantage primero (requiere clave) + automático</option><option value="manual">Solo precios del usuario (no verificados)</option></select>
             </Field>
             <Field label="Divisa EUR/USD"><select className={input} value={s.fxProvider} onChange={(e) => up((d) => void (d.fxProvider = e.target.value as AppSettings["fxProvider"]))}><option value="ecb">BCE (oficial)</option><option value="none">Desactivado</option></select></Field>
             <Field label="Frecuencia de actualización" hint="Las sesiones se lanzan manualmente; la caché de la SEC dura 12 h."><select className={input} value={s.refreshFrequency} onChange={(e) => up((d) => void (d.refreshFrequency = e.target.value as AppSettings["refreshFrequency"]))}><option value="manual">Manual</option><option value="daily">Diaria (caché)</option><option value="weekly">Semanal (caché)</option></select></Field>

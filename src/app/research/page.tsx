@@ -212,11 +212,13 @@ function Candidates({ v, sid }: { v: SessionView; sid: string }) {
       )}
       {!v.candidates.length ? <Empty title="Sin candidatas">El descubrimiento usa SEC EDGAR (frames XBRL) y la lista CSV importada en Settings.</Empty> : (
         <div className="overflow-x-auto rounded-lg border border-line bg-surface-1">
-          <table className="w-full min-w-[720px]">
-            <thead><tr><Th>Ticker</Th><Th>Nombre</Th><Th>Bolsa</Th><Th>Sector (SIC)</Th><Th>Origen</Th><Th>Margen op.</Th><Th>Margen FCO</Th><Th>CAGR ingresos 3a</Th><Th>Cribado</Th><Th>Estado</Th></tr></thead>
+          <table className="w-full min-w-[980px]">
+            <thead><tr><Th>Ticker</Th><Th>Nombre</Th><Th>Bolsa</Th><Th>Sector (SIC)</Th><Th>Origen</Th><Th>Capitalización</Th><Th>Precio ref.</Th><Th>Margen op.</Th><Th>Margen FCO</Th><Th>CAGR ingresos 3a</Th><Th>Rent. FCF</Th><Th>Rent. EBIT</Th><Th>Cribado</Th><Th>Estado</Th></tr></thead>
             <tbody>
               {v.candidates.map((c) => {
                 const s = (c.screen ?? {}) as Record<string, number | null>;
+                const seg = (c.screen as { capSegment?: string | null } | null)?.capSegment;
+                const price = v.evidence.filter((e) => e.ticker === c.ticker && e.metric === "price" && e.verification === "VERIFIED").pop();
                 return (
                   <tr key={c.ticker}>
                     <Td><SessionLink href={`/company/${c.ticker}`} s={sid}>{c.ticker}</SessionLink></Td>
@@ -224,9 +226,13 @@ function Candidates({ v, sid }: { v: SessionView; sid: string }) {
                     <Td className="text-xs">{c.exchange}</Td>
                     <Td className="text-xs">{c.sector} {c.sic && <span className="text-ink-3">({c.sic})</span>}</Td>
                     <Td className="text-xs">{c.source}{c.synthetic && <> <Badge tone="demo">sintético</Badge></>}</Td>
+                    <Td className="num text-xs">{s.marketCap ? `${fmt.big(s.marketCap)} $` : "n/d"}{seg && <div className="text-[10px] text-ink-3">{seg}</div>}</Td>
+                    <Td className="num text-xs">{price ? `${fmt.money(price.value)} $` : "n/d"}{price && <div className="text-[10px] text-ink-3" title={price.confidenceReason ?? ""}>confianza {price.confidence}</div>}</Td>
                     <Td className="num text-xs">{fmt.pct(s.opMargin)}</Td>
                     <Td className="num text-xs">{fmt.pct(s.ocfMargin)}</Td>
                     <Td className="num text-xs">{fmt.pct(s.revenueCagr3y)}</Td>
+                    <Td className="num text-xs">{fmt.pct(s.fcfYield)}</Td>
+                    <Td className="num text-xs">{fmt.pct(s.earningsYield)}</Td>
                     <Td className="num text-xs">{fmt.num(s.screenScore)}</Td>
                     <Td className="text-xs">{c.included ? <Badge tone="good">incluida</Badge> : <Badge tone="serious" title={c.exclusionReason ?? ""}>excluida</Badge>}<div className="text-[10px] text-ink-3">{c.exclusionReason}</div></Td>
                   </tr>

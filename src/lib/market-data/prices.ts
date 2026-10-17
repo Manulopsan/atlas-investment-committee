@@ -1,4 +1,188 @@
-import type { FxProvider, FxRate, PriceHistory, PriceHistoryProvider, PriceProvider, Quote } from "./types";
+import type { FxProvider, FxRate, MarketSnapshot, MarketSnapshotProvider, PriceHistory, PriceHistoryProvider, PriceProvider, Quote, Sourced } from "./types";
+
+/** Browser-like headers: the public Nasdaq endpoints reject requests without them. */
+const BROWSER_HEADERS = { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36", Accept: "application/json" };
+/** Yahoo answers 429 to a full browser User-Agent without its cookies, but serves a generic one. */
+const YAHOO_HEADERS = { "User-Agent": "Mozilla/5.0", Accept: "application/json" };
+
+/** Yahoo chart request with one retry on the alternate host when rate-limited. */
+async function yahooChart(fetchImpl: typeof fetch, url: string): Promise<YahooChart | null> {
+  for (const u of [url, url.replace("://query1.", "://query2.")]) {
+    const res = await fetchImpl(u, { headers: YAHOO_HEADERS });
+    if (res.ok) return (await res.json()) as YahooChart;
+    if (res.status !== 429) return null;
+  }
+  return null;
+}
+
+const yahooSymbol = (ticker: string) => ticker.toUpperCase().replace(/\./g, "-");
+const isoDay = (epochSec: number) => new Date(epochSec * 1000).toISOString().slice(0, 10);
+
+interface YahooChart {
+  chart?: {
+    result?: {
+      meta?: { currency?: string; regularMarketPrice?: number; regularMarketTime?: number; instrumentType?: string };
+      timestamp?: number[];
+      indicators?: { quote?: { close?: (number | null)[] }[]; adjclose?: { adjclose?: (number | null)[] }[] };
+    }[];
+    error?: unknown;
+  };
+}
+
+/**
+ * Yahoo Finance public chart endpoint (no key). Unofficial: it can change or
+ * rate-limit without notice, so it is one provider among several. Quotes are
+ * the regular-session price, delayed.
+ */
+export class YahooPriceProvider implements PriceProvider {
+  id = "yahoo";
+  constructor(private fetchImpl: typeof fetch = fetch) {}
+  static url(ticker: string) {
+    return `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol(ticker))}?range=5d&interval=1d`;
+  }
+  static parse(ticker: string, body: YahooChart, url: string, retrievedAt: string): Quote | null {
+    const meta = body.chart?.result?.[0]?.meta;
+    const price = meta?.regularMarketPrice;
+    if (!meta || meta.currency !== "USD" || typeof price !== "number" || !(price > 0) || typeof meta.regularMarketTime !== "number") return null;
+    return {
+      ticker,
+      price,
+      currency: "USD",
+      asOf: new Date(meta.regularMarketTime * 1000).toISOString(),
+      kind: "DELAYED",
+      delayNote: "Yahoo Finance: precio de la sesión regular, retrasado; endpoint público no oficial.",
+      source: "Yahoo Finance (público)",
+      url,
+      retrievedAt,
+    };
+  }
+  async quote(ticker: string): Promise<Quote | null> {
+    const url = YahooPriceProvider.url(ticker);
+    try {
+      const body = await yahooChart(this.fetchImpl, url);
+      return body ? YahooPriceProvider.parse(ticker, body, url, new Date().toISOString()) : null;
+    } catch {
+      return null;
+    }
+  }
+}
+
+/** Yahoo Finance daily history (10 years): split-adjusted close plus the split+dividend adjusted close. */
+export class YahooHistoryProvider implements PriceHistoryProvider {
+  id = "yahoo-history";
+  constructor(private fetchImpl: typeof fetch = fetch) {}
+  static url(ticker: string) {
+    return `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol(ticker))}?range=10y&interval=1d&events=split`;
+  }
+  static parse(ticker: string, body: YahooChart, url: string, retrievedAt: string): PriceHistory | null {
+    const r = body.chart?.result?.[0];
+    const ts = r?.timestamp ?? [];
+    const close = r?.indicators?.quote?.[0]?.close ?? [];
+    const adj = r?.indicators?.adjclose?.[0]?.adjclose ?? [];
+    if (r?.meta?.currency !== "USD") return null;
+    const points = ts
+      .map((t, i) => ({ date: isoDay(t), close: close[i] ?? NaN, totalReturnClose: adj[i] ?? null }))
+      .filter((p) => Number.isFinite(p.close) && p.close > 0);
+    if (!points.length) return null;
+    return {
+      ticker,
+      points,
+      adjustment: "splits",
+      frequency: "daily",
+      source: "Yahoo Finance (histórico diario, público)",
+      url,
+      retrievedAt,
+      note: "Yahoo Finance: cierres ajustados por splits; la serie ajustada además por dividendos se usa para la rentabilidad total. Endpoint público no oficial.",
+    };
+  }
+  async history(ticker: string): Promise<PriceHistory | null> {
+    const url = YahooHistoryProvider.url(ticker);
+    try {
+      const body = await yahooChart(this.fetchImpl, url);
+      return body ? YahooHistoryProvider.parse(ticker, body, url, new Date().toISOString()) : null;
+    } catch {
+      return null;
+    }
+  }
+}
+
+const MONTHS: Record<string, string> = { jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06", jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12" };
+
+/** "$176.98" → 176.98; "N/A" → null. */
+export const parseUsd = (v: unknown): number | null => {
+  if (typeof v !== "string") return null;
+  const n = Number(v.replace(/[$,\s]/g, ""));
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+
+/** "Oct 15, 2026" (optionally followed by a time) → "2026-10-15". */
+export function parseNasdaqDate(v: unknown): string | null {
+  const m = typeof v === "string" ? /([A-Za-z]{3})[a-z]*\.? (\d{1,2}), (\d{4})/.exec(v) : null;
+  const mm = m ? MONTHS[m[1].toLowerCase()] : undefined;
+  return m && mm ? `${m[3]}-${mm}-${m[2].padStart(2, "0")}` : null;
+}
+
+/** Nasdaq.com public quote API (no key, unofficial). Used to corroborate the primary quote. */
+export class NasdaqPriceProvider implements PriceProvider {
+  id = "nasdaq";
+  constructor(private fetchImpl: typeof fetch = fetch) {}
+  static url(ticker: string) {
+    return `https://api.nasdaq.com/api/quote/${encodeURIComponent(ticker.toUpperCase().replace(/\./g, "/"))}/info?assetclass=stocks`;
+  }
+  static parse(ticker: string, body: unknown, url: string, retrievedAt: string): Quote | null {
+    const d = (body as { data?: { primaryData?: { lastSalePrice?: string; lastTradeTimestamp?: string } } })?.data?.primaryData;
+    const price = parseUsd(d?.lastSalePrice);
+    if (!price) return null;
+    return {
+      ticker,
+      price,
+      currency: "USD",
+      asOf: parseNasdaqDate(d?.lastTradeTimestamp) ?? retrievedAt.slice(0, 10),
+      kind: "DELAYED",
+      delayNote: "Nasdaq.com: último precio de venta, retrasado; API pública no oficial.",
+      source: "Nasdaq.com (público)",
+      url,
+      retrievedAt,
+    };
+  }
+  async quote(ticker: string): Promise<Quote | null> {
+    const url = NasdaqPriceProvider.url(ticker);
+    try {
+      const res = await this.fetchImpl(url, { headers: BROWSER_HEADERS });
+      if (!res.ok) return null;
+      return NasdaqPriceProvider.parse(ticker, await res.json(), url, new Date().toISOString());
+    } catch {
+      return null;
+    }
+  }
+}
+
+/**
+ * Nasdaq.com stock screener: every US-listed stock with last price and market
+ * capitalisation in one request. Used only to screen (capitalisation segment
+ * and valuation yields); reference prices still come from a quote provider.
+ */
+export class NasdaqSnapshotProvider implements MarketSnapshotProvider {
+  id = "nasdaq-screener";
+  static URL = "https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=25000&download=true";
+  constructor(private fetchImpl: typeof fetch = fetch) {}
+  static parse(body: unknown, retrievedAt: string): Sourced<MarketSnapshot[]> {
+    const rows = (body as { data?: { rows?: Record<string, string>[] } })?.data?.rows ?? [];
+    const data: MarketSnapshot[] = [];
+    for (const r of rows) {
+      const ticker = r.symbol?.trim().toUpperCase().replace(/\//g, ".");
+      const marketCap = Number(r.marketCap);
+      if (!ticker || !(marketCap > 0)) continue;
+      data.push({ ticker, marketCap, lastPrice: parseUsd(r.lastsale), sector: r.sector || null, industry: r.industry || null, country: r.country || null });
+    }
+    return { data, source: "Nasdaq.com stock screener (público)", url: NasdaqSnapshotProvider.URL, retrievedAt };
+  }
+  async snapshot(): Promise<Sourced<MarketSnapshot[]>> {
+    const res = await this.fetchImpl(NasdaqSnapshotProvider.URL, { headers: BROWSER_HEADERS });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return NasdaqSnapshotProvider.parse(await res.json(), new Date().toISOString());
+  }
+}
 
 /**
  * Stooq public CSV quote (free, no key). Quotes are delayed and may be the

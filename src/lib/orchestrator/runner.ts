@@ -30,6 +30,7 @@ import {
   updateSession,
   usageTotals,
   type IssueRow,
+  type CandidateRow,
   type SessionRow,
   type VerdictRow,
 } from "../db/repo";
@@ -66,7 +67,7 @@ import {
 import { BudgetExceededError, planEstimate, StopRequestedError, SubscriptionLimitError } from "../llm/cost";
 import { AGENT_ROLES, ROLE_LABELS, VERDICT_LABELS, type AgentRole, type Convergence, type SessionStatus, type Verdict } from "../types";
 import { runAgentTask, type OrchestratorDeps } from "./agentTask";
-import { companySnapshot, type CompanySnapshot } from "./companyState";
+import { companySnapshot, latestVerifiedPriceEvidence, type CompanySnapshot } from "./companyState";
 import {
   candidatesBlock,
   evidenceBlock,
@@ -76,7 +77,9 @@ import {
   revisionDigest,
   round1Prompt,
   threadBlock,
+  type CandidatePrice,
 } from "./prompts";
+import { referenceQuote, registerQuote } from "./tools";
 import { isPaused, TERMINAL_STATUSES } from "../state";
 import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
@@ -232,7 +235,9 @@ async function phaseDiscovery(s: SessionRow, deps: RunnerDeps) {
     updateSession(s.id, { coverage: r.coverage });
     return { coverage: r.coverage, log: r.log, count: r.candidates.length };
   });
-  const included = listCandidates(s.id, true).length;
+  const includedRows = listCandidates(s.id, true);
+  const included = includedRows.length;
+  if (included) await fetchReferencePrices(s, deps, includedRows.map((c) => c.ticker));
   if (s.mode === "dry_run") {
     updateSession(s.id, { estimate: planEstimate(s.settings, Math.max(1, included)) });
     transitionSession(s.id, "DRY_RUN_COMPLETE");
@@ -242,6 +247,37 @@ async function phaseDiscovery(s: SessionRow, deps: RunnerDeps) {
     throw new PhaseFailedError(`El descubrimiento no produjo candidatas analizables (${res.coverage?.description ?? ""}). Revise las fuentes, el SEC_USER_AGENT o importe tickers por CSV.`);
   }
   transitionSession(s.id, "ROUND_1_RUNNING");
+}
+
+/**
+ * The system (not an agent) fetches and registers a reference price for every
+ * candidate, cross-checked against a second source, so the analysis never
+ * depends on an agent remembering to call get_price.
+ */
+async function fetchReferencePrices(s: SessionRow, deps: RunnerDeps, tickers: string[]) {
+  await runTask(s, deps, "reference_prices", { phase: "DISCOVERY" }, async () => {
+    const ctx = { sessionId: s.id, role: "CIO" as const, phase: "DISCOVERY", round1: false, md: deps.md, settings: s.settings, fetchImpl: deps.fetchImpl };
+    const out: Record<string, string> = {};
+    await mapLimit(tickers, 3, async (t) => {
+      const r = await referenceQuote(ctx, t).catch(() => null);
+      if (!r) {
+        out[t] = "sin precio";
+        return;
+      }
+      const ev = registerQuote(ctx, t, r);
+      out[t] = `${ev.value} USD (${ev.confidence})`;
+    });
+    return out;
+  });
+}
+
+function candidatePrices(sessionId: string, cands: CandidateRow[]): Record<string, CandidatePrice | null> {
+  return Object.fromEntries(
+    cands.map((c) => {
+      const e = latestVerifiedPriceEvidence(sessionId, c.ticker);
+      return [c.ticker, e ? { value: e.value!, asOf: e.publishedAt, source: e.source, evidenceId: shortId(e.id), confidence: e.confidence } : null];
+    }),
+  );
 }
 
 async function phaseRound1(s: SessionRow, deps: RunnerDeps) {
@@ -260,7 +296,7 @@ async function phaseRound1(s: SessionRow, deps: RunnerDeps) {
             phase: "ROUND_1",
             role,
             model: s.settings.model,
-            prompt: round1Prompt(role, s.config, ctx.candidates, ctx.ownNotes),
+            prompt: round1Prompt(role, s.config, ctx.candidates, ctx.ownNotes, candidatePrices(s.id, ctx.candidates)),
             dataTools: ROUND1_TOOLS,
             submit: { name: "submit_initial_report", description: "Entrega tu informe inicial (ronda 1). Se valida y queda congelado al cerrar la ronda.", schema: initialReportSchema(role) },
             maxIterations: s.settings.limits.maxToolIterations,

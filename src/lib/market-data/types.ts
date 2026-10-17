@@ -140,8 +140,25 @@ export function pointOnOrBefore(h: PriceHistory, date: string, maxGapDays = 10):
   return (t - Date.parse(best.date)) / 86_400_000 <= maxGapDays ? best : null;
 }
 
+/** One listed stock in a market-wide snapshot (screening only). */
+export interface MarketSnapshot {
+  ticker: string;
+  marketCap: number;
+  lastPrice: number | null;
+  sector: string | null;
+  industry: string | null;
+  country: string | null;
+}
+
+export interface MarketSnapshotProvider {
+  id: string;
+  snapshot(): Promise<Sourced<MarketSnapshot[]>>;
+}
+
 export interface MarketData {
   synthetic: boolean;
+  /** Market-wide capitalisations for screening (optional: screening falls back to fundamentals only). */
+  snapshot?: MarketSnapshotProvider | null;
   reference: ReferenceDataProvider;
   fundamentals: FundamentalsProvider;
   prices: PriceProvider[];

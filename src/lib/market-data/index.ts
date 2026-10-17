@@ -1,7 +1,7 @@
 import path from "node:path";
 import type { AppSettings, SectorExclusion } from "../config";
 import { SecEdgarProvider } from "./sec";
-import { AlphaVantageHistoryProvider, AlphaVantagePriceProvider, EcbFxProvider, ManualPriceProvider, StooqHistoryProvider, StooqPriceProvider } from "./prices";
+import { AlphaVantageHistoryProvider, AlphaVantagePriceProvider, EcbFxProvider, ManualPriceProvider, NasdaqPriceProvider, NasdaqSnapshotProvider, StooqHistoryProvider, StooqPriceProvider, YahooHistoryProvider, YahooPriceProvider } from "./prices";
 import { syntheticMarketData } from "./synthetic";
 import type { MarketData, PriceHistoryProvider, PriceProvider } from "./types";
 import type { SessionMode } from "../types";
@@ -17,16 +17,18 @@ export function createMarketData(mode: SessionMode, settings: AppSettings, opts:
     fetchImpl: opts.fetchImpl,
     cacheDir: path.join(process.cwd(), "data", "cache", "sec"),
   });
+  // Order matters: the first provider that answers is the reference, the second corroborates it.
   const prices: PriceProvider[] = [];
   const av = process.env.ALPHAVANTAGE_API_KEY?.trim() || "";
   if (settings.priceProvider === "alphavantage" && av) prices.push(new AlphaVantagePriceProvider(av, opts.fetchImpl));
-  if (settings.priceProvider !== "manual") prices.push(new StooqPriceProvider(opts.fetchImpl));
+  if (settings.priceProvider !== "manual") prices.push(new YahooPriceProvider(opts.fetchImpl), new NasdaqPriceProvider(opts.fetchImpl), new StooqPriceProvider(opts.fetchImpl));
   if (opts.userPrices?.length) prices.push(new ManualPriceProvider(opts.userPrices));
-  const history: PriceHistoryProvider[] = [];
+  const history: PriceHistoryProvider[] = [new YahooHistoryProvider(opts.fetchImpl)];
   if (av) history.push(new AlphaVantageHistoryProvider(av, opts.fetchImpl));
   history.push(new StooqHistoryProvider(opts.fetchImpl));
   return {
     synthetic: false,
+    snapshot: new NasdaqSnapshotProvider(opts.fetchImpl),
     asOf,
     reference: sec,
     fundamentals: sec,
@@ -45,6 +47,7 @@ export function classifySic(sic: string | null): SectorExclusion | null {
   if (n >= 6300 && n <= 6411) return "INSURANCE";
   if (n >= 4810 && n <= 4899) return "TELECOM";
   if (n === 6770) return "SHELL_COMPANIES"; // blank checks / SPACs
+  if (n === 6798) return "REITS"; // real estate investment trusts: FCF and margins are not comparable
   return null;
 }
 
@@ -53,6 +56,7 @@ export const EXCLUSION_LABELS: Record<SectorExclusion, string> = {
   INSURANCE: "Aseguradoras",
   TELECOM: "Telecomunicaciones",
   SHELL_COMPANIES: "Sociedades instrumentales / SPAC",
+  REITS: "REIT (sociedades de inversión inmobiliaria)",
 };
 
 /**

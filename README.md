@@ -44,7 +44,7 @@ ATLAS reúne un comité de inversión de cuatro agentes con perfiles distintos:
 | **Risk** | Riesgos y vetos: balance, dilución, litigios, concentración, riesgos del 10-K. |
 | **CIO** | Modera el debate, clasifica controversias y propone el veredicto final. |
 
-Cada agente trabaja en llamadas independientes al modelo, con sus propias instrucciones, herramientas y contexto autorizado. Los datos proceden de fuentes públicas (SEC EDGAR, Stooq, BCE) y todos los números pasan por un **motor de cálculo determinista**: el modelo argumenta, pero no inventa cifras ni decide la puntuación.
+Cada agente trabaja en llamadas independientes al modelo, con sus propias instrucciones, herramientas y contexto autorizado. Los datos proceden de fuentes públicas (SEC EDGAR, Yahoo Finance, Nasdaq.com, BCE) y todos los números pasan por un **motor de cálculo determinista**: el modelo argumenta, pero no inventa cifras ni decide la puntuación.
 
 **Puntos clave**
 
@@ -70,7 +70,7 @@ flowchart LR
   F --> K[Ranking 0–5]
 ```
 
-1. **Descubrimiento:** criba el universo de la SEC (NYSE, Nasdaq, CBOE) por márgenes, flujo de caja y crecimiento, y excluye los sectores elegidos. También puedes importar tus propios tickers por CSV.
+1. **Descubrimiento:** criba todo el universo de la SEC (NYSE, Nasdaq, CBOE) sin IA. Aplica filtros de tamaño, márgenes, crecimiento, rentabilidad FCF y segmento por capitalización. Ordena las que pasan con una combinación ponderada de calidad y valoración, con todos los criterios configurables, y excluye los sectores elegidos. A cada candidata le asigna un **precio de referencia contrastado entre dos fuentes**. También puedes importar tus propios tickers por CSV.
 2. **Ronda 1:** cada agente analiza las candidatas por su cuenta.
 3. **Ronda 2:** lectura cruzada, debate por empresa y verificación de las discrepancias factuales, que solo se resuelven con evidencia verificada, nunca por votación.
 4. **Rondas 3 y 4:** revisión versionada de los informes y debate selectivo de las controversias que pueden cambiar la decisión.
@@ -127,10 +127,11 @@ En modo suscripción, la app usa el [Claude Agent SDK](https://docs.claude.com/e
 Todo lo demás se ajusta desde la propia app, en **Settings**. Cada sesión congela su configuración al iniciarse, así que cualquier comité es reproducible.
 
 - **Modelo y acceso:** modelo principal, modelo de debate, esfuerzo y tope de la ventana de uso.
+- **Criterios del cribado inicial:** ingresos mínimos, márgenes mínimos, rango de crecimiento, rentabilidad FCF mínima y pesos del ranking (calidad frente a valoración).
 - **Objetivo de inversión:** horizonte, rentabilidad objetivo, margen de seguridad, tasa de descuento, tolerancia al riesgo, estrategia, número máximo de finalistas y sectores excluidos.
 - **Universo:** bolsas, segmentos por capitalización, número de candidatas y de empresas en el debate, y lista propia de tickers por CSV.
 - **Límites:** rondas de debate, verificaciones por empresa, iteraciones de herramientas, concurrencia, tokens por llamada y presupuesto (modo API).
-- **Proveedores de datos:** precios (Stooq, Alpha Vantage o manual) y divisa EUR/USD (BCE).
+- **Proveedores de datos:** precios (automático: Yahoo Finance contrastado con Nasdaq.com; Alpha Vantage opcional; o solo precios propios) y divisa EUR/USD (BCE).
 
 ## Uso
 
@@ -183,7 +184,8 @@ Para ejecutar las sesiones fuera del servidor web, pon `ATLAS_RUNNER=worker` en 
 ## Limitaciones
 
 - **Universo parcial:** el cribado usa los *frames* XBRL de la SEC por año natural; quedan fuera los emisores sin etiquetas estándar o con ejercicio desalineado. La app lo indica y nunca afirma una cobertura exhaustiva.
-- **Precios gratuitos retrasados.** Sin un precio verificado no hay CAGR ni compra posible.
+- **Precios gratuitos retrasados** de endpoints públicos no oficiales (Yahoo Finance y Nasdaq.com), que pueden cambiar o limitar peticiones. Cada precio se contrasta con una segunda fuente; sin un precio verificado no hay CAGR ni compra posible.
+- **Valoración del cribado orientativa:** usa la capitalización del screener de Nasdaq.com y no resta la deuda neta; la valoración rigurosa la hacen los agentes.
 - **Aproximaciones:** el ROIC y la deuda neta son aproximados y se marcan con confianza media o baja.
 - **Citas de 10-K:** solo HTML con texto (no PDFs escaneados), con páginas aproximadas.
 - **Sesgo de anticipación:** el modo histórico no puede impedir que el modelo recuerde lo ocurrido después de la fecha de análisis.

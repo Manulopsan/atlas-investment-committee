@@ -48,6 +48,7 @@ export const SCREEN_FRAMES = {
   revenue: ["RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues"],
   operatingIncome: ["OperatingIncomeLoss"],
   operatingCashFlow: ["NetCashProvidedByUsedInOperatingActivities"],
+  capex: ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets", "PaymentsForCapitalImprovements"],
 };
 
 export interface SecOptions {
