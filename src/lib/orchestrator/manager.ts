@@ -1,6 +1,8 @@
 import os from "node:os";
 import {
   acquireLease,
+  getLimitPause,
+  listSessions,
   getSession,
   leaseActive,
   logError,
@@ -8,16 +10,18 @@ import {
   renewLease,
   requestRun,
   resetTaskForRetry,
+  setLimitPause,
   transitionSession,
   updateSession,
   type SessionRow,
 } from "../db/repo";
 import { AnthropicAdapter } from "../llm/anthropic";
 import { ScriptedAdapter } from "../llm/scripted";
+import { claudeLoginAvailable, ClaudeSubscriptionAdapter, fetchSubscriptionStatus } from "../llm/subscription";
 import type { ModelAdapter } from "../llm/adapter";
 import { createMarketData } from "../market-data";
 import { syntheticMarketData } from "../market-data/synthetic";
-import { TERMINAL_STATUSES } from "../state";
+import { isPaused, TERMINAL_STATUSES } from "../state";
 import { prepareResume, runSession, type RunnerDeps } from "./runner";
 
 /**
@@ -43,11 +47,23 @@ class NoCallAdapter implements ModelAdapter {
 
 export class StartError extends Error {}
 
+/** Live sessions need either the Claude Code login (subscription) or an API key, depending on the frozen settings. */
+export function liveCredentialsError(provider: "subscription" | "api"): string | null {
+  if (provider === "subscription") return claudeLoginAvailable() ? null : "No hay sesión de Claude Code iniciada en este equipo: ejecute `claude` y luego /login (o defina CLAUDE_CODE_OAUTH_TOKEN con `claude setup-token`)";
+  return process.env.ANTHROPIC_API_KEY?.trim() ? null : "ANTHROPIC_API_KEY no está configurada en el servidor";
+}
+
+function liveCredentialsCheck(s: SessionRow) {
+  const err = liveCredentialsError(s.settings.llmProvider);
+  if (err) throw new StartError(err);
+}
+
 export function buildDeps(s: SessionRow, signal?: AbortSignal): RunnerDeps {
   if (s.mode === "demo") return { adapter: new ScriptedAdapter(), md: { ...syntheticMarketData(), asOf: s.config.asOfDate ?? null }, settings: s.settings, signal };
   const md = createMarketData(s.mode, s.settings, { userPrices: s.config.userPrices });
   if (s.mode === "dry_run") return { adapter: new NoCallAdapter(), md, settings: s.settings, signal };
-  if (!process.env.ANTHROPIC_API_KEY?.trim()) throw new StartError("ANTHROPIC_API_KEY no está configurada en el servidor");
+  liveCredentialsCheck(s);
+  if (s.settings.llmProvider === "subscription") return { adapter: new ClaudeSubscriptionAdapter(), md, settings: s.settings, signal };
   return { adapter: new AnthropicAdapter({ refusalFallback: s.settings.refusalFallback }), md, settings: s.settings, signal };
 }
 
@@ -89,7 +105,7 @@ export function startSession(id: string): void {
   const s = getSession(id);
   if (!s) throw new StartError("Sesión no encontrada");
   if (TERMINAL_STATUSES.includes(s.status)) return;
-  if (s.mode === "live" && !process.env.ANTHROPIC_API_KEY?.trim() && runnerMode() === "inprocess") throw new StartError("ANTHROPIC_API_KEY no está configurada en el servidor");
+  if (s.mode === "live" && runnerMode() === "inprocess") liveCredentialsCheck(s);
   requestRun(id, true);
   if (runnerMode() === "worker" || local.has(id)) return; // the worker picks it up
   const p = runWithLease(id, ownerId("web")).finally(() => local.delete(id));
@@ -110,7 +126,7 @@ export function resumeSession(id: string) {
   const s = getSession(id);
   if (!s || TERMINAL_STATUSES.includes(s.status)) throw new StartError("La sesión no se puede reanudar");
   if (leaseActive(s)) return;
-  if (s.mode === "live" && !process.env.ANTHROPIC_API_KEY?.trim() && runnerMode() === "inprocess") throw new StartError("ANTHROPIC_API_KEY no está configurada en el servidor");
+  if (s.mode === "live" && runnerMode() === "inprocess") liveCredentialsCheck(s);
   prepareResume(id);
   startSession(id);
 }
@@ -131,7 +147,57 @@ export function abandonSession(id: string) {
 /** Display state shared by the API views. */
 export function runState(s: SessionRow) {
   const running = leaseActive(s);
-  const terminal = TERMINAL_STATUSES.includes(s.status) || s.status === "PAUSED_ERROR";
+  const terminal = TERMINAL_STATUSES.includes(s.status) || isPaused(s.status);
   const queued = !running && !terminal && s.runRequested && runnerMode() === "worker";
-  return { running, queued, interrupted: !running && !terminal && !queued, runner: runnerMode() };
+  const limitPause = s.status === "PAUSED_LIMIT" ? getLimitPause(s.id) : null;
+  return { running, queued, interrupted: !running && !terminal && !queued, runner: runnerMode(), limitPause };
+}
+
+export function setAutoResume(id: string, autoResume: boolean) {
+  const p = getLimitPause(id);
+  if (!p) throw new StartError("La sesión no está pausada por el límite de la suscripción");
+  setLimitPause(id, { ...p, autoResume });
+}
+
+/** Margin (window points) below the stop threshold required before resuming, so a resume is not immediately paused again. */
+const RESUME_MARGIN_PCT = 10;
+
+/**
+ * Resumes sessions paused by the subscription limit once the 5-hour window has
+ * reset and has room again. Called periodically by whichever process runs
+ * sessions (the web server in-process, or the worker).
+ */
+export async function autoResumeTick(log: (m: string) => void = () => {}): Promise<void> {
+  const due = listSessions(200).filter((s) => {
+    if (s.status !== "PAUSED_LIMIT" || leaseActive(s)) return false;
+    const p = getLimitPause(s.id);
+    return Boolean(p?.autoResume) && (!p!.resetsAt || Date.parse(p!.resetsAt) <= Date.now());
+  });
+  if (!due.length) return;
+  const st = await fetchSubscriptionStatus(0);
+  const used = (st.fiveHour?.utilization ?? 1) * 100;
+  for (const s of due) {
+    const threshold = s.settings.subscriptionStopAtPct - s.settings.subscriptionFinalReservePct - RESUME_MARGIN_PCT;
+    if (st.status === "rejected" || used >= threshold) {
+      // Not enough room yet: check again after the new reset time.
+      const p = getLimitPause(s.id)!;
+      setLimitPause(s.id, { ...p, resetsAt: st.fiveHour?.resetsAt ?? new Date(Date.now() + 15 * 60_000).toISOString() });
+      continue;
+    }
+    try {
+      resumeSession(s.id);
+      log(`Sesión ${s.id} reanudada automáticamente (ventana de 5 h al ${used.toFixed(0)} %)`);
+    } catch (e) {
+      logError(s.id, { message: `No se pudo reanudar automáticamente: ${e instanceof Error ? e.message : e}` });
+    }
+  }
+}
+
+/** Starts the periodic auto-resume check once per process. */
+export function startAutoResumeLoop(log?: (m: string) => void) {
+  const gg = globalThis as unknown as { __atlasAutoResume?: NodeJS.Timeout };
+  if (gg.__atlasAutoResume) return;
+  const tick = () => void autoResumeTick(log).catch(() => {});
+  gg.__atlasAutoResume = setInterval(tick, 60_000);
+  tick();
 }

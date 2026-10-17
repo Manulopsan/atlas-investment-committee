@@ -67,7 +67,7 @@ export function statusTone(status: string): Tone {
   if (["COMPLETED", "DRY_RUN_COMPLETE", "SUCCEEDED", "RESOLVED", "VERIFIED"].includes(status)) return "good";
   if (["FAILED", "CONFLICT", "STOPPED_BY_BUDGET"].includes(status)) return "critical";
   if (["PAUSED_ERROR", "UNRESOLVED", "UNREACHABLE", "CANCELLED", "STOPPED_BY_USER"].includes(status)) return "serious";
-  if (["PARTIAL", "PENDING", "OPEN", "UNVERIFIED", "VERIFYING"].includes(status)) return "warning";
+  if (["PARTIAL", "PENDING", "OPEN", "UNVERIFIED", "VERIFYING", "PAUSED_LIMIT"].includes(status)) return "warning";
   if (["RUNNING"].includes(status) || status.includes("ROUND") || ["DISCOVERY", "CROSS_REVIEW", "DEBATE", "VERIFICATION", "REVISION", "SELECTIVE_DEBATE", "FINAL_DECISION"].includes(status)) return "accent";
   return "neutral";
 }

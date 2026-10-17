@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { createSession, getSettings } from "@/lib/db/repo";
 import { planEstimate, priceFor } from "@/lib/llm/cost";
-import { startSession } from "@/lib/orchestrator/manager";
+import { liveCredentialsError, startSession } from "@/lib/orchestrator/manager";
 import { sessionSummaries } from "@/lib/view";
 import { fail, json, sameOrigin } from "@/lib/api";
 
@@ -22,9 +22,10 @@ export async function POST(req: Request) {
   const settings = getSettings();
   const estimate = planEstimate(settings, settings.investment.maxCandidates);
   if (mode === "live") {
-    if (!process.env.ANTHROPIC_API_KEY?.trim()) return fail("Falta ANTHROPIC_API_KEY en el servidor (.env.local). Use el modo demostración o el análisis en seco.", 412);
-    if (!priceFor(settings, settings.model) || !priceFor(settings, settings.debateModel)) return fail("Configure el precio de los modelos seleccionados antes de iniciar: sin precio no se puede controlar el presupuesto.", 412);
-    if (consent !== true) return fail("Se requiere consentimiento explícito para iniciar llamadas de pago al modelo.", 412);
+    const credErr = liveCredentialsError(settings.llmProvider);
+    if (credErr) return fail(`${credErr}. Mientras tanto puede usar el modo demostración o el análisis en seco.`, 412);
+    if (settings.llmProvider === "api" && (!priceFor(settings, settings.model) || !priceFor(settings, settings.debateModel))) return fail("Configure el precio de los modelos seleccionados antes de iniciar: sin precio no se puede controlar el presupuesto.", 412);
+    if (consent !== true) return fail(settings.llmProvider === "subscription" ? "Se requiere consentimiento explícito para consumir el uso de su suscripción de Claude." : "Se requiere consentimiento explícito para iniciar llamadas de pago al modelo.", 412);
   }
   const s = createSession({ mode, settings, estimate });
   try {

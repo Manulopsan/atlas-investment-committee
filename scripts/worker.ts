@@ -15,7 +15,7 @@ for (const f of [".env.local", ".env"]) {
 
 async function main() {
   const { listRunnable, getSession } = await import("../src/lib/db/repo");
-  const { ownerId, runWithLease } = await import("../src/lib/orchestrator/manager");
+  const { ownerId, runWithLease, startAutoResumeLoop } = await import("../src/lib/orchestrator/manager");
   const { prepareResume } = await import("../src/lib/orchestrator/runner");
 
   const owner = ownerId("worker");
@@ -44,6 +44,8 @@ async function main() {
 
   log(`Worker ${owner} iniciado (paralelo máx. ${maxParallel}). Ctrl+C para salir.`);
   const timer = setInterval(() => void tick(), 2_000);
+  // Sessions paused by the Claude subscription limit are re-queued once the usage window resets.
+  startAutoResumeLoop(log);
   void tick();
 
   function shutdown() {

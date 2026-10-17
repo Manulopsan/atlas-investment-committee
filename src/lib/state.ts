@@ -9,7 +9,26 @@ export const TERMINAL_STATUSES: SessionStatus[] = [
   "FAILED",
 ];
 
-const STOP: SessionStatus[] = ["PAUSED_ERROR", "STOPPED_BY_USER", "STOPPED_BY_BUDGET", "FAILED"];
+/** Non-terminal stops: the session resumes into the phase it was interrupted in. */
+export const PAUSED_STATUSES: SessionStatus[] = ["PAUSED_ERROR", "PAUSED_LIMIT"];
+export const isPaused = (s: SessionStatus) => PAUSED_STATUSES.includes(s);
+
+const STOP: SessionStatus[] = ["PAUSED_ERROR", "PAUSED_LIMIT", "STOPPED_BY_USER", "STOPPED_BY_BUDGET", "FAILED"];
+
+const RESUMABLE: SessionStatus[] = [
+  "CREATED",
+  "DISCOVERY",
+  "ROUND_1_COMPLETE",
+  "ROUND_1_RUNNING",
+  "CROSS_REVIEW",
+  "DEBATE",
+  "VERIFICATION",
+  "REVISION",
+  "SELECTIVE_DEBATE",
+  "FINAL_DECISION",
+  "STOPPED_BY_USER",
+  "FAILED",
+];
 
 /**
  * Allowed transitions. Budget stops during debate jump straight to
@@ -30,20 +49,8 @@ export const TRANSITIONS: Record<SessionStatus, SessionStatus[]> = {
   COMPLETED: [],
   DRY_RUN_COMPLETE: [],
   // Resuming re-enters the phase that was interrupted.
-  PAUSED_ERROR: [
-    "CREATED",
-    "DISCOVERY",
-    "ROUND_1_COMPLETE",
-    "ROUND_1_RUNNING",
-    "CROSS_REVIEW",
-    "DEBATE",
-    "VERIFICATION",
-    "REVISION",
-    "SELECTIVE_DEBATE",
-    "FINAL_DECISION",
-    "STOPPED_BY_USER",
-    "FAILED",
-  ],
+  PAUSED_ERROR: RESUMABLE,
+  PAUSED_LIMIT: [...RESUMABLE, "PAUSED_ERROR"],
   STOPPED_BY_USER: [],
   STOPPED_BY_BUDGET: [],
   FAILED: [],

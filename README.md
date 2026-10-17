@@ -1,203 +1,198 @@
-# ATLAS INVESTMENT COMMITTEE — AI EQUITY RESEARCH LAB
+<div align="center">
 
-Comité de inversión autónomo de **cuatro agentes de IA** (Quality, Valuation, Risk y CIO) que investigan acciones estadounidenses con datos públicos gratuitos, debaten entre sí con mensajes reales y almacenados, revisan sus conclusiones y emiten una decisión final **trazable** hasta sus fuentes y supuestos.
+# ATLAS Investment Committee
 
-> Las estimaciones no son garantías de rentabilidad. El 15 % anual es un **objetivo de selección**, no una previsión. Recomendar **cero** compras es un resultado válido. No es asesoramiento financiero.
+**Laboratorio de análisis de acciones con un comité de cuatro agentes de IA que investigan, debaten y deciden con datos públicos y cálculos trazables.**
+
+![Node](https://img.shields.io/badge/node-%E2%89%A522.13-339933?logo=node.js&logoColor=white)
+![Next.js](https://img.shields.io/badge/Next.js-15-000000?logo=next.js)
+![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)
+![SQLite](https://img.shields.io/badge/SQLite-node%3Asqlite-003B57?logo=sqlite)
+![Tests](https://img.shields.io/badge/tests-Vitest-6E9F18?logo=vitest&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-blue)
 
 ![Overview](docs/screenshots/overview-dark.png)
 
+</div>
+
+> **Aviso.** ATLAS es una herramienta de investigación y aprendizaje, **no asesoramiento financiero**. Las estimaciones no garantizan rentabilidades; la rentabilidad objetivo es un criterio de selección, no una previsión, y recomendar **cero** compras es un resultado válido.
+
 ---
 
-## 1. Qué hace (resumen de lo implementado)
+## Índice
 
-| Área | Implementación |
+- [Qué es](#qué-es)
+- [Cómo funciona](#cómo-funciona)
+- [Inicio rápido](#inicio-rápido)
+- [Acceso a Claude: suscripción o API](#acceso-a-claude-suscripción-o-api)
+- [Configuración](#configuración)
+- [Uso](#uso)
+- [Arquitectura](#arquitectura)
+- [Desarrollo](#desarrollo)
+- [Limitaciones](#limitaciones)
+- [Seguridad](#seguridad)
+- [Licencia](#licencia)
+
+## Qué es
+
+ATLAS reúne un comité de inversión de cuatro agentes con perfiles distintos:
+
+| Agente | Papel |
 |---|---|
-| **Orquestador real** | `src/lib/orchestrator/runner.ts`: máquina de estados validada (`src/lib/state.ts`). Cada intervención de cada agente es **una llamada diferenciada al modelo** con su propia instrucción de sistema, su contexto autorizado y sus herramientas. Nada de "cuatro textos en una respuesta". |
-| **Ronda 1 independiente** | Cuatro tareas en paralelo (concurrencia limitada). El *context broker* (`src/lib/agents/broker.ts`) impide leer informes ajenos hasta que los cuatro informes existen y se **congelan** (trigger SQLite que bloquea `UPDATE`/`DELETE`). Fallo de un agente → estado `FAILED` solo para él, reintento individual. |
-| **Ronda 2A lectura cruzada** | Cada agente recibe los 4 informes congelados + registro de evidencias y entrega 3 argumentos sólidos, 3+ objeciones, errores factuales, hipótesis discutibles, preguntas y cambios en la lista. |
-| **Ronda 2B debate estructurado** | Por empresa: Quality expone → Valuation cuestiona precio → Risk objeta → **responden los analistas aludidos** (agente↔agente) → el CIO clasifica controversias (FACTUAL / FORECAST / JUDGEMENT), asigna responsable y acción. Cada mensaje tiene emisor, destinatario, ticker, tipo, afirmación, evidencia (EV-n), pregunta, resultado esperado y `in_reply_to`. |
-| **Ronda 2C verificación** | Las discrepancias factuales se convierten en incidencias con historial. Se resuelven **solo con evidencia VERIFICADA** (comprobación determinista contra el registro o tarea documental del agente asignado); nunca por votación. Previsiones discrepantes → hipótesis alternativas con su consecuencia calculada por el motor. |
-| **Ronda 3 revisión** | Cada agente entrega puntuación/conclusión revisadas, argumentos aceptados/rechazados, datos nuevos y cuestiones sin resolver. Se guardan como **versión nueva**; el informe inicial es inmutable. |
-| **Ronda 4 debate selectivo** | El CIO elige solo controversias que pueden cambiar la decisión (señales del motor: divergencia calidad/valoración, CAGR cerca del umbral, pérdida permanente, datos no verificados, sensibilidad del precio de entrada). Respuesta dirigida + una ronda adicional de revisión (configurable). |
-| **Decisión final** | El CIO puntúa catalizadores y propone veredictos; el **motor determinista** (`src/lib/finance/scoring.ts`) calcula la puntuación final (30/30/20/15/5 con penalización por riesgo), aplica vetos y **limita** el veredicto máximo permitido (el CIO puede ser más prudente, nunca menos). Ranking de **0 a 5** empresas, nunca rellenado. Convergencia `RESOLVED / PARTIAL / UNRESOLVED / STOPPED_BY_BUDGET / STOPPED_BY_USER / FAILED`. |
-| **Datos públicos** | Módulo `src/lib/market-data` con interfaces de proveedor intercambiables: SEC EDGAR (tickers+bolsa, *submissions*, XBRL *companyfacts*, *frames*, búsqueda de texto completo), Stooq (precio retrasado), Alpha Vantage (opcional, clave gratuita), BCE (EUR/USD), precios del usuario vía CSV, y un proveedor **sintético** exclusivo del modo demo. |
-| **Registro de evidencias** | `src/lib/evidence/registry.ts`: ticker, métrica, valor, unidad, periodo y tipo de periodo, base GAAP/non-GAAP, fecha de publicación y de recuperación, fuente, URL, tipo (reportado / calculado / estimado / no verificado), fórmula e inputs, confianza y motivo. Solo el sistema puede crear `VERIFIED`; los agentes no se autocertifican. Discrepancias entre fuentes → se conservan ambas + incidencia `DATA_CONFLICT`. |
-| **Verificación de fuentes** | Herramienta `verify_source`: abre la URL (solo https públicas, guardia SSRF, tamaño y tiempo limitados), comprueba que el **fragmento literal** está en la página → `VERIFIED`; si no aparece → `UNVERIFIED`; si no abre → `UNREACHABLE`. El contenido recuperado se trata como dato no confiable. |
-| **Motor de cálculo** | `src/lib/finance/*`: CAGR, rentabilidad total con dividendos (sin doble conteo), precio máximo compatible con el objetivo, precio de entrada, margen de seguridad, DCF + sensibilidad, múltiplos, conversión USD/EUR y rentabilidad en EUR con sensibilidad de divisa, guardas que impiden mezclar trimestral/anual, USD/EUR o GAAP/non-GAAP. Datos ausentes → `null`, nunca cero. |
-| **Control de costes** | Estimación previa, presupuesto y límite de llamadas por sesión, límites de tokens por llamada, comprobación **antes de cada llamada** del peor caso, reserva del presupuesto para el veredicto del CIO, uso real (tokens reportados por la API) por agente y por fase, coste etiquetado como **estimado**, tabla de precios editable, modo **en seco** sin IA. |
-| **Dashboard** | Next.js + Tailwind: Overview, Committee Room, Debate en directo (filtros por agente, ticker, ronda y tipo), Research (candidatas, informes, revisiones, evidencias, incidencias, historial de puntuaciones, exportación), Final Ranking (orden y filtros), ficha de empresa y Settings. Modo claro/oscuro, responsive, estados vacíos útiles. |
-| **Persistencia y reanudación** | SQLite (`node:sqlite`, sin dependencias nativas). Las tareas completadas nunca se repiten; las que quedaron `RUNNING` tras un cierre se re-encolan. Los efectos de cada tarea se aplican en una transacción junto con su marca de éxito. |
-| **Exportación** | Informe final (Markdown), tabla comparativa (CSV), informes por agente, transcripción del debate, evidencias y fuentes, historial de puntuaciones; todas con fecha de corte, modelo, fuentes, limitaciones, estado de verificación y advertencia. Redacción de secretos. |
+| **Quality** | Calidad del negocio: márgenes, retorno sobre el capital, ventajas competitivas, gestión. |
+| **Valuation** | Precio frente a valor: DCF, múltiplos históricos y comparables, margen de seguridad. |
+| **Risk** | Riesgos y vetos: balance, dilución, litigios, concentración, riesgos del 10-K. |
+| **CIO** | Modera el debate, clasifica controversias y propone el veredicto final. |
 
-## Novedades v2
+Cada agente trabaja en llamadas independientes al modelo, con sus propias instrucciones, herramientas y contexto autorizado. Los datos proceden de fuentes públicas (SEC EDGAR, Stooq, BCE) y todos los números pasan por un **motor de cálculo determinista**: el modelo argumenta, pero no inventa cifras ni decide la puntuación.
 
-| Mejora | Qué hace | Dónde |
-|---|---|---|
-| **Worker separado + tiempo real** | Con `ATLAS_RUNNER=worker` la web solo encola y `npm run worker` ejecuta las sesiones en otro proceso. Cada sesión la ejecuta un único proceso que mantiene un *lease* en SQLite; si el worker muere, la sesión se retoma al expirar el lease sin repetir tareas completadas. El dashboard recibe los cambios por **Server-Sent Events** (con un sondeo lento como respaldo). | `scripts/worker.ts`, `src/lib/orchestrator/manager.ts`, `api/sessions/[id]/events` |
-| **Lectura de 10-K/10-Q** | Herramienta `read_filing_section`: descarga el documento principal del último 10-K (o 10-Q), localiza la sección real (no el índice) — Risk Factors, MD&A, Business, Legal Proceedings, Cybersecurity, Market Risk… — y devuelve pasajes **literales** citados como `Item 1A ¶12 · pág. ≈23`, cada uno registrado como evidencia verificada. | `src/lib/market-data/filings.ts`, `tools.ts` |
-| **Valoración histórica y comparables** | `get_historical_valuation`: PER, EV/EBIT y P/FCF al cierre de cada ejercicio con precios históricos públicos (Stooq; Alpha Vantage mensual ajustado si hay clave) → rango mín/mediana/máx. `get_peer_comparables`: mismas fórmulas para la empresa y los competidores que elija el agente, con mediana y aviso de ejercicios desalineados. | `prices.ts`, `tools.ts` |
-| **Recuento exacto de tokens** | Antes de cada llamada se usa el endpoint gratuito `count_tokens` de Anthropic para el chequeo de presupuesto (con respaldo heurístico). El uso se desglosa también **por empresa**. | `anthropic.ts`, `agentTask.ts`, `cost.ts` |
-| **Conciliación de cifras en texto libre** | Detecta porcentajes, importes y múltiplos escritos por los agentes en tesis y conclusiones y los concilia contra el registro de evidencias; las no conciliadas se muestran como tales. | `src/lib/evidence/reconcile.ts`, Research |
-| **Modo histórico (point-in-time)** | `asOfDate`: solo presentaciones a la SEC hechas hasta esa fecha (sin reexpresiones posteriores), precio de cierre de esa fecha, tipo EUR/USD del BCE de ese día, filtros de presentaciones y búsquedas, y sin cribado automático (evita sesgo de anticipación). | `config.ts`, `sec.ts`, `tools.ts`, `discovery.ts` |
-| **Evaluaciones (evals)** | Ejecuta el comité en casos históricos y compara con lo que pasó después: tasa de acierto de las compras, CAGR realizado por veredicto, correlación de Spearman puntuación↔rentabilidad, error del CAGR base, % dentro del rango bajista–alcista. Pantalla **H · Evals** e informe Markdown en `data/evals/`. | `src/lib/evals`, `scripts/eval.ts`, `evals/cases.example.json` |
-| **Autenticación opcional** | `ATLAS_BASIC_AUTH=usuario:contraseña` protege todas las rutas si expone la app fuera de su máquina. | `src/middleware.ts` |
+**Puntos clave**
 
-### Ejecutar con worker separado
+- **Independencia real en la ronda 1:** ningún agente puede leer los informes de los demás hasta que los cuatro existen y quedan congelados (inmutables en SQLite).
+- **Debate estructurado** entre agentes, con mensajes almacenados, evidencias citadas (`EV-n`) y respuestas encadenadas.
+- **Registro de evidencias:** cada dato lleva fuente, URL, periodo, fecha y estado de verificación. Solo el sistema puede marcar algo como `VERIFIED`.
+- **Lectura de 10-K/10-Q** con citas literales (`Item 1A ¶12 · pág. ≈23`).
+- **El veredicto lo limita el motor:** el CIO puede ser más prudente que el motor, nunca menos.
+- **Reanudable:** las tareas completadas nunca se repiten. Con la suscripción de Claude, la sesión se pausa al agotar la ventana de uso y se reanuda sola cuando se reinicia.
+- **Modo demostración** con datos sintéticos, sin red ni coste, y **análisis en seco** sin llamadas de IA.
+
+## Cómo funciona
+
+```mermaid
+flowchart LR
+  D[Descubrimiento<br/>SEC XBRL] --> R1[R1 · Informes<br/>independientes]
+  R1 --> R2A[R2A · Lectura<br/>cruzada]
+  R2A --> R2B[R2B · Debate<br/>por empresa]
+  R2B --> R2C[R2C · Verificación<br/>de discrepancias]
+  R2C --> R3[R3 · Revisión]
+  R3 --> R4[R4 · Debate<br/>selectivo]
+  R4 --> F[Decisión del CIO<br/>+ motor determinista]
+  F --> K[Ranking 0–5]
+```
+
+1. **Descubrimiento:** criba el universo de la SEC (NYSE, Nasdaq, CBOE) por márgenes, flujo de caja y crecimiento, y excluye los sectores elegidos. También puedes importar tus propios tickers por CSV.
+2. **Ronda 1:** cada agente analiza las candidatas por su cuenta.
+3. **Ronda 2:** lectura cruzada, debate por empresa y verificación de las discrepancias factuales, que solo se resuelven con evidencia verificada, nunca por votación.
+4. **Rondas 3 y 4:** revisión versionada de los informes y debate selectivo de las controversias que pueden cambiar la decisión.
+5. **Decisión:** puntuación ponderada (calidad, valoración, rentabilidad potencial, solidez y catalizadores, con penalización por riesgo), vetos y ranking de **0 a 5** empresas, nunca rellenado para llegar a 5.
+
+## Inicio rápido
+
+**Requisitos:** Node.js ≥ 22.13 (usa el módulo integrado `node:sqlite`; no hay nada que compilar) y, para comités reales, una cuenta de Claude con [Claude Code](https://docs.claude.com/en/docs/claude-code) o una clave de API de Anthropic.
 
 ```bash
-# .env.local
-ATLAS_RUNNER=worker
-# terminal 1
-npm run dev        # o: npm run build && npm start
-# terminal 2
-npm run worker
-```
-
-### Evaluaciones
-
-```bash
-npm run eval -- --demo                                          # sintética, gratis: valida el arnés
-npm run eval -- --file evals/cases.example.json                 # solo muestra la estimación de coste
-npm run eval -- --file evals/cases.example.json --confirm-cost  # DE PAGO: un comité real por caso
-```
-
-Formato de un caso: `{ "name": "...", "asOf": "2021-06-30", "horizonYears": 3, "tickers": ["...", "..."] }`. Advertencias que acompañan siempre a los resultados: el modelo puede **recordar hechos posteriores** a la fecha de análisis (sesgo de anticipación que las herramientas no pueden eliminar), los tickers se eligen hoy (sesgo de selección), la rentabilidad es solo de precio si la fuente no ajusta dividendos, y las muestras pequeñas son diagnósticos, no prueba estadística.
-
-## 2. Estructura de archivos
-
-```
-src/
-  app/                         # Páginas (A–G) y API routes (App Router)
-    page.tsx                   # A · Overview + iniciar comité (estimación, consentimiento)
-    committee/ debate/ research/ ranking/ company/[ticker]/ settings/
-    api/settings  api/estimate  api/csv
-    api/sessions  api/sessions/[id]  …/action  …/export  …/company/[ticker]
-  components/                  # Shell, UI, gráficos (Recharts), hooks de polling
-  lib/
-    config.ts                  # Objetivo de inversión, límites, tabla de precios (Zod)
-    types.ts  state.ts         # Roles, estados, transiciones validadas
-    db/index.ts  db/repo.ts    # Esquema SQLite (+ triggers de inmutabilidad) y repositorio
-    agents/profiles.ts         # 4 perfiles: instrucciones de sistema y criterios de puntuación
-    agents/schemas.ts          # Esquemas Zod de todas las salidas de los agentes
-    agents/broker.ts           # Control de acceso a informes (independencia de la ronda 1)
-    llm/adapter.ts anthropic.ts scripted.ts cost.ts
-    market-data/               # SEC, precios, FX, sintético, descubrimiento, CSV
-    evidence/registry.ts       # Registro centralizado de evidencias
-    finance/                   # returns, valuation, fundamentals, scoring (deterministas)
-    orchestrator/              # runner (fases), agentTask (bucle de herramientas), tools, prompts, manager
-    evals/                     # Arnés de evaluación histórica (v2)
-    export/  security/  view.ts api.ts
-  middleware.ts                # Autenticación básica opcional (v2)
-scripts/worker.ts  scripts/eval.ts
-evals/cases.example.json
-tests/                         # 88 pruebas (Vitest)
-docs/screenshots/              # Capturas de una sesión DEMO (datos sintéticos)
-```
-
-## 3. Instalación y arranque
-
-Requisitos: **Node.js ≥ 22.13** (usa el módulo integrado `node:sqlite`; no hay que compilar nada nativo).
-
-```bash
-git clone <repo> && cd atlas-investment-committee
+git clone https://github.com/Manulopsan/atlas-investment-committee.git
+cd atlas-investment-committee
 npm install
-cp .env.example .env.local      # y rellene las variables (ver abajo)
-npm run dev                     # http://localhost:3000
-# producción local:
-npm run build && npm start
-# comprobaciones:
-npm test            # pruebas
-npm run typecheck   # TypeScript
-npm run lint        # ESLint
+cp .env.example .env.local     # rellene SEC_USER_AGENT (ver Configuración)
+npm run dev                    # http://localhost:3000
 ```
 
-La base de datos se crea en `./data/atlas.db` (configurable con `ATLAS_DB_PATH`). Node mostrará un aviso `ExperimentalWarning: SQLite` — es normal.
+Para probarlo sin configurar nada, abre la app y lanza una **Demostración**.
 
-## 4. Variables de entorno (`.env.local`, solo servidor)
+> En Windows con WSL, clona el proyecto dentro del sistema de archivos de Linux (por ejemplo `~/atlas`) y no en `/mnt/c/...`: el arranque es varias veces más rápido.
+
+## Acceso a Claude: suscripción o API
+
+Se elige en **Settings → Acceso a Claude**.
+
+| | Suscripción (por defecto) | API |
+|---|---|---|
+| Autenticación | La cuenta con la que Claude Code ha iniciado sesión en tu equipo (`claude` y después `/login`) | `ANTHROPIC_API_KEY` en `.env.local` |
+| Consumo | Ventanas de uso de tu plan (5 horas y semanal) | Pago por token |
+| Límite de la sesión | Tope configurable de la ventana de 5 h (95 % por defecto) | Presupuesto en USD y límite de llamadas |
+| Al llegar al límite | **Pausa** y reanudación automática cuando se reinicia la ventana | Parada controlada con veredicto del CIO |
+
+En modo suscripción, la app usa el [Claude Agent SDK](https://docs.claude.com/en/docs/agent-sdk/overview): las herramientas de los agentes se exponen como un servidor MCP local y el orquestador ejecuta cada herramienta él mismo. La cabecera muestra en todo momento el uso de tu ventana de 5 h, y antes de cada comité verás los tokens necesarios y el % de la ventana que se estima que consumirá (se calibra con tus comités anteriores).
+
+> El modo suscripción está pensado para uso personal en tu propio equipo. Para ofrecer la aplicación a terceros, usa una clave de API y revisa los términos de uso de Anthropic.
+
+## Configuración
+
+### Variables de entorno (`.env.local`, solo en el servidor)
 
 | Variable | Obligatoria | Uso |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | Para el modo real | Clave de la API de Anthropic. Nunca llega al navegador, ni a SQLite, logs o exportaciones. |
-| `SEC_USER_AGENT` | Para datos reales | La SEC exige un User-Agent con contacto, p. ej. `Atlas Research tu@email.com`. |
-| `ALPHAVANTAGE_API_KEY` | No | Proveedor de precios alternativo (plan gratuito). La URL guardada se redacta. |
-| `ATLAS_DB_PATH` | No | Ruta del fichero SQLite. |
-| `ATLAS_RUNNER` | No | `inprocess` (por defecto) o `worker` (la web solo encola; ejecute `npm run worker`). |
+| `SEC_USER_AGENT` | Para datos reales | La SEC exige un User-Agent con contacto, por ejemplo `Atlas Research tu@email.com`. |
+| `ANTHROPIC_API_KEY` | Solo en modo API | Clave de la API de Anthropic. Nunca llega al navegador, ni a SQLite, ni a los logs. |
+| `CLAUDE_CODE_OAUTH_TOKEN` | No | Token de `claude setup-token` para el modo suscripción en equipos sin sesión interactiva. |
+| `ALPHAVANTAGE_API_KEY` | No | Proveedor de precios alternativo (plan gratuito). |
+| `ATLAS_DB_PATH` | No | Ruta del fichero SQLite (por defecto `./data/atlas.db`). |
+| `ATLAS_RUNNER` | No | `inprocess` (por defecto) o `worker` (la web solo encola y `npm run worker` ejecuta). |
 | `ATLAS_WORKER_CONCURRENCY` | No | Sesiones en paralelo en el worker (por defecto 1). |
-| `ATLAS_BASIC_AUTH` | No | `usuario:contraseña` para proteger la app si la expone en red. |
+| `ATLAS_BASIC_AUTH` | No | `usuario:contraseña` para proteger la app si la expones en red. |
 
-`.env*` está en `.gitignore` (salvo `.env.example`).
+### Settings
 
-## 5. Configurar el modelo
+Todo lo demás se ajusta desde la propia app, en **Settings**. Cada sesión congela su configuración al iniciarse, así que cualquier comité es reproducible.
 
-En **Settings → Modelo y clave**:
+- **Modelo y acceso:** modelo principal, modelo de debate, esfuerzo y tope de la ventana de uso.
+- **Objetivo de inversión:** horizonte, rentabilidad objetivo, margen de seguridad, tasa de descuento, tolerancia al riesgo, estrategia, número máximo de finalistas y sectores excluidos.
+- **Universo:** bolsas, segmentos por capitalización, número de candidatas y de empresas en el debate, y lista propia de tickers por CSV.
+- **Límites:** rondas de debate, verificaciones por empresa, iteraciones de herramientas, concurrencia, tokens por llamada y presupuesto (modo API).
+- **Proveedores de datos:** precios (Stooq, Alpha Vantage o manual) y divisa EUR/USD (BCE).
 
-- **Modelo principal** (informes iniciales, revisiones, decisión del CIO). Por defecto `claude-opus-5-5`.
-- **Modelo de debate y verificación** (el "modelo de calidad" configurable para los turnos de debate).
-- **Esfuerzo** (`low`…`max`): más esfuerzo = más tokens.
-- **Tabla de precios** (USD por millón de tokens, editable; los valores por defecto deben contrastarse con https://www.anthropic.com/pricing). Un modelo sin precio — o con precio 0 — no puede usarse en una sesión real, porque el presupuesto no sería controlable.
-- Opcional: *fallback* de servidor ante rechazos (beta; se desactiva solo si la API lo rechaza) y búsqueda web del servidor (coste adicional; sus resultados siempre quedan como NO VERIFICADOS).
+## Uso
 
-## 6. Iniciar el primer comité
+1. **Demostración:** ejecuta el flujo completo con empresas ficticias `DEMO-*`, sin red ni coste. Todo queda etiquetado como sintético.
+2. **Análisis en seco:** descarga el universo de la SEC, criba candidatas y estima el uso sin ninguna llamada de IA.
+3. **Comité real:** revisa la estimación previa, acepta el consentimiento y lanza el comité. Sigue el progreso en **Committee Room** y **Debate**; el resultado aparece en **Final Ranking** y en las fichas de empresa. Puedes detener, reanudar o reintentar una tarea concreta.
 
-1. **Demostración (sin clave, sin red, sin coste):** Overview → *Demostración* → *Iniciar demostración*. Ejecuta las 4 rondas completas con empresas **ficticias** `DEMO-*` y un adaptador de modelo *scripted*. Todo está etiquetado como SINTÉTICO y nunca se mezcla con sesiones reales.
-2. **Análisis en seco:** configure `SEC_USER_AGENT`, elija *Análisis en seco*. Descarga el universo de la SEC, criba candidatas y calcula la estimación de coste **sin ninguna llamada de IA**.
-3. **Comité real:** configure `ANTHROPIC_API_KEY` y `SEC_USER_AGENT`, revise en Settings el objetivo, universo, sectores excluidos, presupuesto y límites; en Overview elija *Comité real*, revise la estimación (llamadas, agentes, rondas, modelo, presupuesto), marque el consentimiento y pulse *Iniciar comité (de pago)*. Siga el progreso en **Committee Room** y **Debate**; el resultado queda en **Final Ranking** y en las fichas de empresa. Puede **Detener**, **Reanudar** o **Reintentar** una tarea fallida.
+**Exportaciones:** informe final (Markdown), tabla comparativa (CSV), informes por agente, transcripción del debate y registro de evidencias.
 
-Opcional: en Settings → *Universo* importe tickers por CSV (`ticker[,precio,fecha]`); se combinan con las candidatas descubiertas, o se analizan en exclusiva si marca la casilla correspondiente.
+**Evaluaciones históricas:** ejecuta el comité en una fecha pasada (modo *point-in-time*) y compáralo con lo que ocurrió después:
 
-## 7. Control del gasto
-
-- **Presupuesto máximo por sesión (USD)** y **llamadas máximas por sesión**: antes de *cada* llamada se calcula el peor caso (tokens de entrada estimados + máximo de salida × precio). Si superaría el disponible, la llamada **no se hace**.
-- **Reserva para el veredicto** (15 % por defecto): las fases de debate no pueden gastarla. Al agotarse el presupuesto el debate se **detiene de forma controlada**, el CIO documenta los desacuerdos pendientes con la reserva y la convergencia queda `STOPPED_BY_BUDGET`.
-- Límites de **tokens de entrada/salida por llamada**, **iteraciones de herramientas por tarea**, **rondas de debate** (1–2), **ronda adicional de revisión** (0–1), **verificaciones por empresa** y **concurrencia**.
-- El uso real (tokens que devuelve la API) se registra por llamada, agente y fase; el coste se muestra siempre como **estimado** (tokens × tabla configurada). El modo demo registra coste 0 (simulado).
-- La aplicación **no hace llamadas de pago al arrancar**: solo cuando se inicia una sesión real con consentimiento explícito.
-
-## 8. Resultado real de las comprobaciones (en este entorno)
-
-```
-npm test           → Test Files 8 passed (8) · Tests 88 passed (88)
-npm run typecheck  → sin errores
-npm run lint       → sin errores ni avisos
-npm run build      → compilación de producción correcta (Next.js 15.5)
+```bash
+npm run eval -- --demo                              # sintética y gratuita: valida el arnés
+npm run eval -- --file evals/cases.example.json     # muestra la estimación; añada --confirm-cost para ejecutar
 ```
 
-Las pruebas cubren los 15 requisitos: perfiles distintos (1), prompts de ronda 1 sin contenido ajeno y broker que deniega la lectura (2–3), debate bloqueado hasta 4 informes (4), mensajes persistidos y filtrables (5), objeciones → incidencias resueltas solo con evidencia (6), informes congelados inmutables y revisiones versionadas (7), matemáticas financieras (8), cifras sin fuente nunca verificadas + `verify_source` + guardia SSRF (9), límites de coste que detienen llamadas y parada controlada (10), errores sin pérdida de resultados y reintento individual (11), ranking con <5 y 0 empresas (12), exportaciones con cabecera y sin secretos (13), datos sintéticos aislados y sin tickers reales codificados en la UI (14), reanudación sin duplicar tareas (15), además de un flujo completo de extremo a extremo.
+## Arquitectura
 
-Pruebas de la v2: conciliación de cifras, lector de secciones del 10-K (índice frente a sección real, párrafo y página), históricos de precios (Stooq, Alpha Vantage, BCE), múltiplos históricos y comparables, modo histórico (reexpresiones posteriores excluidas, precio a la fecha), *leases* del worker, firma de cambios del SSE, uso de `count_tokens` en el chequeo de presupuesto, arnés de evaluación completo y autenticación básica.
+```
+src/
+  app/                  Páginas (Overview, Committee, Debate, Research, Ranking, Settings, Evals) y rutas API
+  components/           Interfaz, gráficos y hooks (SSE + sondeo)
+  lib/
+    orchestrator/       Fases del comité, bucle de herramientas de cada agente, reanudación
+    agents/             Perfiles, esquemas Zod de las salidas y control de acceso a informes
+    llm/                Adaptadores: suscripción (Agent SDK), API de Anthropic y demo; uso y límites
+    market-data/        SEC EDGAR, precios, divisa, 10-K, proveedor sintético
+    evidence/           Registro y conciliación de evidencias
+    finance/            Motor determinista: rentabilidades, valoración, puntuación y veredictos
+    db/                 Esquema SQLite (con triggers de inmutabilidad) y repositorio
+scripts/                worker.ts (ejecutor separado) y eval.ts (evaluaciones)
+tests/                  Pruebas con Vitest
+```
 
-Verificaciones manuales hechas (v2): web en modo `worker` encolando una sesión, `npm run worker` ejecutándola hasta COMPLETED, flujo SSE emitiendo eventos, `npm run eval -- --demo` completo y `npm run eval -- --file …` deteniéndose en la estimación sin `--confirm-cost`.
+**Stack:** Next.js 15 (App Router), React, TypeScript, Tailwind CSS, Recharts, Zod, SQLite (`node:sqlite`), Claude Agent SDK y Anthropic SDK.
 
-Verificaciones manuales hechas (v1): servidor de producción arrancado, sesión demo completa vía API HTTP (COMPLETED, 86 mensajes, 341 evidencias), análisis en seco, exportaciones, y capturas de todas las pantallas en claro/oscuro y a 390 px de ancho (sin desbordamiento horizontal ni errores de consola).
+## Desarrollo
 
-**Lo que NO se ha podido comprobar aquí:** la red de este entorno bloquea `sec.gov`, `stooq.com` y el BCE, y no había clave de Anthropic. Por tanto **no se ha consultado ningún dato financiero real ni se ha ejecutado ninguna llamada real al modelo**. Los proveedores están implementados contra las APIs públicas documentadas y probados con respuestas simuladas; el adaptador de Anthropic se probó solo hasta obtener un `401 authentication_error` con una clave inválida (confirma la ruta de la llamada, no el contenido). La primera ejecución real debería hacerse con un presupuesto bajo.
+```bash
+npm run dev         # servidor de desarrollo
+npm test            # pruebas (Vitest)
+npm run typecheck   # TypeScript
+npm run lint        # ESLint
+npm run check       # las tres anteriores
+npm run build && npm start   # producción local
+```
 
-## 9. Limitaciones conocidas
+Para ejecutar las sesiones fuera del servidor web, pon `ATLAS_RUNNER=worker` en `.env.local` y lanza `npm run worker` en otra terminal.
 
-- **Cobertura parcial del universo:** el cribado usa los *frames* XBRL de la SEC por año natural; quedan fuera emisores sin etiquetas estándar o con ejercicio desalineado. La app lo etiqueta como *Universo parcial* y nunca afirma cobertura exhaustiva. El segmento por capitalización no se criba en el descubrimiento.
-- **Precios gratuitos retrasados** (Stooq no documenta la zona horaria); se muestran con fecha, hora y tipo. Sin precio verificado no hay CAGR ni compra posible.
-- **ROIC aproximado** (sin ajustar fondo de comercio ni arrendamientos), deuda neta solo con la etiqueta de deuda a largo plazo; ambos marcados con confianza media/baja.
-- `verify_source` comprueba coincidencia **literal** del fragmento citado; no interpreta tablas ni PDFs escaneados.
-- La resolución determinista de incidencias exige que la métrica y el periodo coincidan con un dato del 10-K; en otro caso pasa a verificación documental por un agente y, si no hay evidencia verificada, queda **pendiente**.
-- La estimación previa de coste es heurística; el control duro es el chequeo previo a cada llamada.
-- En modo `inprocess` (por defecto) las sesiones corren dentro del servidor web: si se cierra, la sesión queda *interrumpida* y se reanuda con un clic desde la última tarea completada. En modo `worker` el worker la retoma solo al expirar su *lease*.
-- Las páginas de las citas de 10-K son **aproximadas** (se cuentan los saltos de página del HTML); las secciones se localizan por los títulos "Item 1A", "Item 7"…, que algunos emisores formatean de forma atípica.
-- Stooq no documenta si su histórico está ajustado por *splits*/dividendos: los múltiplos históricos se marcan con confianza media.
-- El modo histórico no puede impedir que el modelo **recuerde** lo ocurrido después de la fecha de análisis; las evaluaciones lo advierten siempre.
-- `node:sqlite` es experimental en Node 22 (estable en versiones posteriores).
+## Limitaciones
 
-## 10. Mejoras recomendadas (siguiente versión)
+- **Universo parcial:** el cribado usa los *frames* XBRL de la SEC por año natural; quedan fuera los emisores sin etiquetas estándar o con ejercicio desalineado. La app lo indica y nunca afirma una cobertura exhaustiva.
+- **Precios gratuitos retrasados.** Sin un precio verificado no hay CAGR ni compra posible.
+- **Aproximaciones:** el ROIC y la deuda neta son aproximados y se marcan con confianza media o baja.
+- **Citas de 10-K:** solo HTML con texto (no PDFs escaneados), con páginas aproximadas.
+- **Sesgo de anticipación:** el modo histórico no puede impedir que el modelo recuerde lo ocurrido después de la fecha de análisis.
+- **Estimación de uso aproximada:** el control efectivo es la comprobación previa a cada llamada.
 
-Las siete mejoras propuestas para la v2 están implementadas (ver *Novedades v2*). Pendiente para una v3:
+## Seguridad
 
-1. Lectura de PDFs escaneados y tablas de los 10-K (hoy solo HTML con texto).
-2. Una fuente de precios históricos con licencia explícita para uso comercial y con ajuste por *splits* documentado.
-3. Multiusuario real (cuentas y permisos), más allá de la autenticación básica compartida.
-4. Evaluaciones con muestras amplias elegidas por reglas fijadas de antemano, para reducir el sesgo de selección, y repetidas con distintos modelos.
-5. Tablero de coste por empresa con previsión del gasto restante.
+Las claves solo viven en variables de entorno del servidor, y las respuestas y exportaciones pasan por un redactor de secretos. Las mutaciones exigen el mismo origen, y las URLs que abren los agentes pasan una guardia SSRF. El contenido recuperado se trata como dato no confiable. Los agentes no ejecutan código ni pueden cambiar instrucciones, configuración o límites: solo disponen de herramientas de datos y cálculo en lista blanca.
 
----
+## Licencia
 
-### Seguridad
-
-Claves solo en variables de entorno del servidor; las respuestas de la API y las exportaciones pasan por un redactor de secretos; las mutaciones exigen el mismo origen; las URLs que abren los agentes pasan una guardia SSRF; el contenido recuperado se envuelve como dato no confiable; los agentes no ejecutan código ni pueden modificar instrucciones, configuración o límites (solo disponen de herramientas de datos y cálculo en lista blanca).
+[MIT](LICENSE) © Manulopsan

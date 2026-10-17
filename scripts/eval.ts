@@ -15,7 +15,7 @@ for (const f of [".env.local", ".env"]) {
 async function main() {
   const { EvalFileSchema, DEMO_EVAL, estimateEval, runEval, writeEvalReport, evalMarkdown } = await import("../src/lib/evals/index");
   const { getSettings } = await import("../src/lib/db/repo");
-  const { buildDeps } = await import("../src/lib/orchestrator/manager");
+  const { buildDeps, liveCredentialsError } = await import("../src/lib/orchestrator/manager");
 
   const args = process.argv.slice(2);
   const has = (f: string) => args.includes(f);
@@ -39,8 +39,9 @@ async function main() {
       console.log("\nNo se ha hecho ninguna llamada. Repita con --confirm-cost para ejecutar (de pago).");
       process.exit(0);
     }
-    if (!process.env.ANTHROPIC_API_KEY?.trim()) {
-      console.error("Falta ANTHROPIC_API_KEY en .env.local");
+    const credErr = liveCredentialsError(settings.llmProvider);
+    if (credErr) {
+      console.error(credErr);
       process.exit(1);
     }
   }

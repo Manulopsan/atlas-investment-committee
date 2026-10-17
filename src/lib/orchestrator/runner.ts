@@ -6,6 +6,7 @@ import {
   failTask,
   freezeInitialReports,
   getMessage,
+  getLimitPause,
   getSession,
   initialReport,
   insertHypothesis,
@@ -18,6 +19,7 @@ import {
   listMessages,
   listTasks,
   logError,
+  setLimitPause,
   markTaskRunning,
   requeueInterruptedTasks,
   saveCandidates,
@@ -61,7 +63,7 @@ import {
   type VerificationT,
   type VetoT,
 } from "../agents/schemas";
-import { BudgetExceededError, planEstimate, StopRequestedError } from "../llm/cost";
+import { BudgetExceededError, planEstimate, StopRequestedError, SubscriptionLimitError } from "../llm/cost";
 import { AGENT_ROLES, ROLE_LABELS, VERDICT_LABELS, type AgentRole, type Convergence, type SessionStatus, type Verdict } from "../types";
 import { runAgentTask, type OrchestratorDeps } from "./agentTask";
 import { companySnapshot, type CompanySnapshot } from "./companyState";
@@ -75,7 +77,7 @@ import {
   round1Prompt,
   threadBlock,
 } from "./prompts";
-import { TERMINAL_STATUSES } from "../state";
+import { isPaused, TERMINAL_STATUSES } from "../state";
 import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 
@@ -837,7 +839,7 @@ async function phaseFinal(s: SessionRow, deps: RunnerDeps) {
       return r.output as FinalDecisionT;
     });
   } catch (e) {
-    if (e instanceof StopRequestedError) throw e;
+    if (e instanceof StopRequestedError || e instanceof SubscriptionLimitError) throw e;
     if (!(e instanceof BudgetExceededError)) throw e;
     cioError = e.message;
     updateSession(s.id, { budgetExhausted: true });
@@ -941,7 +943,7 @@ export async function runSession(sessionId: string, deps: RunnerDeps): Promise<S
   for (let guard = 0; guard < 50; guard++) {
     const s = getSession(sessionId);
     if (!s) throw new Error("Sesión no encontrada");
-    if (TERMINAL_STATUSES.includes(s.status) || s.status === "PAUSED_ERROR") return s;
+    if (TERMINAL_STATUSES.includes(s.status) || isPaused(s.status)) return s;
     try {
       if (s.stopRequested) throw new StopRequestedError();
       const nxt = NEXT[s.status];
@@ -989,6 +991,13 @@ export async function runSession(sessionId: string, deps: RunnerDeps): Promise<S
         transitionSession(sessionId, "STOPPED_BY_USER", { convergence: "STOPPED_BY_USER" });
         return getSession(sessionId)!;
       }
+      if (e instanceof SubscriptionLimitError) {
+        // Plan window exhausted: pause and keep everything done so far; resumes when the window resets.
+        logError(sessionId, { phase: cur.status, message: e.message });
+        transitionSession(sessionId, "PAUSED_LIMIT", { error: e.message });
+        setLimitPause(sessionId, { resetsAt: e.resetsAt, autoResume: getLimitPause(sessionId)?.autoResume ?? true, pausedAt: new Date().toISOString() });
+        return getSession(sessionId)!;
+      }
       if (e instanceof BudgetExceededError) {
         updateSession(sessionId, { budgetExhausted: true });
         logError(sessionId, { phase: cur.status, message: e.message });
@@ -1015,10 +1024,11 @@ export function prepareResume(sessionId: string) {
   const s = getSession(sessionId);
   if (!s) throw new Error("Sesión no encontrada");
   requeueInterruptedTasks(sessionId);
-  if (s.status === "PAUSED_ERROR") {
+  if (isPaused(s.status)) {
     for (const t of listTasks(sessionId)) if (t.status === "FAILED" || t.status === "CANCELLED") ensureTask(sessionId, t.taskKey, { phase: t.phase });
     transitionSession(sessionId, s.resumeStatus ?? "DISCOVERY", { error: null });
     updateSession(sessionId, { error: null });
+    setLimitPause(sessionId, null);
   }
 }
 

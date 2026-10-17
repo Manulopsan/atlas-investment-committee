@@ -1,0 +1,4 @@
+# Normalise line endings in the repository (Windows/OneDrive checkouts write CRLF)
+* text=auto eol=lf
+*.png binary
+*.svg text eol=lf

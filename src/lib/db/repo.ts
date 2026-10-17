@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import { getDb, nowIso, tx } from "./index";
 import { AppSettingsSchema, defaultSettings, type AppSettings, type InvestmentConfig } from "../config";
-import { assertTransition, InvalidTransitionError } from "../state";
+import { assertTransition, InvalidTransitionError, isPaused } from "../state";
 import type {
   AgentRole,
   Convergence,
@@ -38,6 +38,37 @@ export function getSettings(): AppSettings {
   if (!row) return defaultSettings();
   const parsed = AppSettingsSchema.safeParse(pj(row.value_json, {}));
   return parsed.success ? parsed.data : defaultSettings();
+}
+
+/** Small JSON values kept next to the app settings (e.g. subscription usage calibration). */
+export function getKv<T>(key: string, fallback: T): T {
+  const row = get("SELECT value_json FROM settings WHERE key = ?", key);
+  return row ? pj(row.value_json, fallback) : fallback;
+}
+
+export function setKv(key: string, value: unknown) {
+  run(
+    "INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",
+    key,
+    j(value),
+    nowIso(),
+  );
+}
+
+/** A session paused by the Claude subscription limit: when the window resets and whether to resume on its own. */
+export interface LimitPause {
+  resetsAt: string | null;
+  autoResume: boolean;
+  pausedAt: string;
+}
+
+export function getLimitPause(sessionId: string): LimitPause | null {
+  return getKv<LimitPause | null>(`limit_pause:${sessionId}`, null);
+}
+
+export function setLimitPause(sessionId: string, p: LimitPause | null) {
+  if (p) setKv(`limit_pause:${sessionId}`, p);
+  else run("DELETE FROM settings WHERE key = ?", `limit_pause:${sessionId}`);
 }
 
 export function saveSettings(s: AppSettings): AppSettings {
@@ -137,7 +168,7 @@ export function leaseActive(s: Pick<SessionRow, "leaseUntil">): boolean {
 /** Sessions waiting for a runner: requested, not finished/paused, and with no live lease (includes crashed runs). */
 export function listRunnable(limit = 10): SessionRow[] {
   return all(
-    "SELECT * FROM sessions WHERE run_requested = 1 AND status NOT IN ('COMPLETED','DRY_RUN_COMPLETE','STOPPED_BY_USER','STOPPED_BY_BUDGET','FAILED','PAUSED_ERROR') AND (lease_until IS NULL OR lease_until < ?) ORDER BY updated_at LIMIT ?",
+    "SELECT * FROM sessions WHERE run_requested = 1 AND status NOT IN ('COMPLETED','DRY_RUN_COMPLETE','STOPPED_BY_USER','STOPPED_BY_BUDGET','FAILED','PAUSED_ERROR','PAUSED_LIMIT') AND (lease_until IS NULL OR lease_until < ?) ORDER BY updated_at LIMIT ?",
     nowIso(),
     limit,
   ).map(toSession);
@@ -190,13 +221,13 @@ export function transitionSession(id: string, to: SessionStatus, extra: { error?
   if (!s) throw new Error(`Sesión no encontrada: ${id}`);
   assertTransition(s.status, to);
   // A paused session may only resume into the phase it was interrupted in.
-  if (s.status === "PAUSED_ERROR" && !["STOPPED_BY_USER", "FAILED", "PAUSED_ERROR"].includes(to) && to !== (s.resumeStatus ?? "CREATED")) {
+  if (isPaused(s.status) && !["STOPPED_BY_USER", "FAILED", "PAUSED_ERROR", "PAUSED_LIMIT"].includes(to) && to !== (s.resumeStatus ?? "CREATED")) {
     throw new InvalidTransitionError(s.status, to);
   }
   const terminal = ["COMPLETED", "DRY_RUN_COMPLETE", "STOPPED_BY_USER", "STOPPED_BY_BUDGET", "FAILED"].includes(to);
   run(
     `UPDATE sessions SET status = ?, updated_at = ?, error = COALESCE(?, error), convergence = COALESCE(?, convergence),
-     resume_status = CASE WHEN ? = 'PAUSED_ERROR' THEN status ELSE resume_status END,
+     resume_status = CASE WHEN ? IN ('PAUSED_ERROR','PAUSED_LIMIT') AND status NOT IN ('PAUSED_ERROR','PAUSED_LIMIT') THEN status ELSE resume_status END,
      completed_at = CASE WHEN ? THEN ? ELSE completed_at END WHERE id = ?`,
     to,
     nowIso(),

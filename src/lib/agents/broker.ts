@@ -1,5 +1,5 @@
 import { getSession, listAgentNotes, listCandidates, listReports, type ReportRow } from "../db/repo";
-import { phaseIndex } from "../state";
+import { isPaused, phaseIndex } from "../state";
 import { AGENT_ROLES, type AgentRole } from "../types";
 
 /**
@@ -24,7 +24,7 @@ export function round1Closed(sessionId: string): boolean {
   if (!s) return false;
   const initial = listReports(sessionId).filter((r) => r.kind === "INITIAL");
   const allFrozen = AGENT_ROLES.every((role) => initial.some((r) => r.agentRole === role && r.frozen));
-  const status = s.resumeStatus && s.status === "PAUSED_ERROR" ? s.resumeStatus : s.status;
+  const status = s.resumeStatus && isPaused(s.status) ? s.resumeStatus : s.status;
   return allFrozen && phaseIndex(status) >= phaseIndex("ROUND_1_COMPLETE");
 }
 

@@ -19,6 +19,8 @@ export const SESSION_STATUSES = [
   "COMPLETED",
   "DRY_RUN_COMPLETE",
   "PAUSED_ERROR",
+  /** Claude subscription usage window exhausted: resumable once the window resets. */
+  "PAUSED_LIMIT",
   "STOPPED_BY_USER",
   "STOPPED_BY_BUDGET",
   "FAILED",

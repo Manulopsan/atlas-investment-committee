@@ -5,6 +5,7 @@ import { Badge, Button, Card, ErrorBox, Notice } from "@/components/ui";
 import { SECTOR_EXCLUSIONS, type AppSettings } from "@/lib/config";
 
 interface Env {
+  claudeLoginAvailable: boolean;
   anthropicKeyConfigured: boolean;
   secUserAgentConfigured: boolean;
   alphaVantageKeyConfigured: boolean;
@@ -80,9 +81,23 @@ export default function SettingsPage() {
       {msg && <Notice tone="good">{msg}</Notice>}
       {err && <ErrorBox>{err}</ErrorBox>}
       <div className="grid gap-4 lg:grid-cols-2">
-        <Card title="Modelo y clave (servidor)">
+        <Card title="Modelo y acceso (servidor)">
           <div className="space-y-3">
+            <Field label="Acceso a Claude" hint="Suscripción: usa la cuenta con la que Claude Code ha iniciado sesión en este equipo y consume sus ventanas de uso (sin factura por token). API: paga por token con ANTHROPIC_API_KEY.">
+              <select className={input} value={s.llmProvider} onChange={(e) => up((d) => void (d.llmProvider = e.target.value as AppSettings["llmProvider"]))}>
+                <option value="subscription">Cuenta de Claude (suscripción, vía Claude Code)</option>
+                <option value="api">API de Anthropic (clave, de pago)</option>
+              </select>
+            </Field>
+            {s.llmProvider === "subscription" && (
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Tope de la ventana de 5 h (%)" hint="No se hacen nuevas llamadas al alcanzarlo."><Num value={s.subscriptionStopAtPct} min={10} max={100} onChange={(n) => up((d) => void (d.subscriptionStopAtPct = n))} /></Field>
+                <Field label="Llamadas máx. por sesión (suscripción)" hint="Solo protección ante bucles; el límite real es la ventana."><Num value={s.subscriptionMaxCalls} min={50} max={5000} step={50} onChange={(n) => up((d) => void (d.subscriptionMaxCalls = n))} /></Field>
+                <Field label="Reserva para el veredicto (puntos %)" hint="El debate se detiene este margen antes del tope."><Num value={s.subscriptionFinalReservePct} min={0} max={30} onChange={(n) => up((d) => void (d.subscriptionFinalReservePct = n))} /></Field>
+              </div>
+            )}
             <div className="flex flex-wrap gap-2 text-sm">
+              Claude Code: {env?.claudeLoginAvailable ? <Badge tone="good">sesión iniciada</Badge> : <Badge tone="serious">sin sesión</Badge>}
               API key: {env?.anthropicKeyConfigured ? <Badge tone="good">configurada en el servidor</Badge> : <Badge tone="serious">no configurada</Badge>}
               SEC User-Agent: {env?.secUserAgentConfigured ? <Badge tone="good">configurado</Badge> : <Badge tone="serious">no configurado</Badge>}
               Alpha Vantage: {env?.alphaVantageKeyConfigured ? <Badge tone="good">configurada</Badge> : <Badge>opcional</Badge>}
@@ -98,13 +113,13 @@ export default function SettingsPage() {
               <select className={input} value={s.effort} onChange={(e) => up((d) => void (d.effort = e.target.value as AppSettings["effort"]))}>{["low", "medium", "high", "xhigh", "max"].map((m) => <option key={m}>{m}</option>)}</select>
             </Field>
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={s.refusalFallback} onChange={(e) => up((d) => void (d.refusalFallback = e.target.checked))} /> Fallback de servidor ante rechazos (beta; se desactiva solo si la API lo rechaza)</label>
-            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={s.enableWebSearch} onChange={(e) => up((d) => void (d.enableWebSearch = e.target.checked))} /> Búsqueda web del servidor de Anthropic (coste adicional por búsqueda; resultados siempre NO VERIFICADOS)</label>
+            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={s.enableWebSearch} onChange={(e) => up((d) => void (d.enableWebSearch = e.target.checked))} /> Búsqueda web del servidor de Anthropic (coste adicional por búsqueda; resultados siempre NO VERIFICADOS; solo con API)</label>
           </div>
         </Card>
         <Card title="Presupuesto y límites">
           <div className="grid grid-cols-2 gap-3">
             <Field label="Presupuesto máx. por sesión (USD)"><Num value={L.maxBudgetUsd} step={0.5} min={0} onChange={(n) => up((d) => void (d.limits.maxBudgetUsd = n))} /></Field>
-            <Field label="Llamadas máx. por sesión"><Num value={L.maxCallsPerSession} min={1} onChange={(n) => up((d) => void (d.limits.maxCallsPerSession = n))} /></Field>
+            <Field label="Llamadas máx. por sesión (API)"><Num value={L.maxCallsPerSession} min={1} onChange={(n) => up((d) => void (d.limits.maxCallsPerSession = n))} /></Field>
             <Field label="Tokens de entrada máx. por llamada"><Num value={L.maxInputTokensPerCall} step={1000} onChange={(n) => up((d) => void (d.limits.maxInputTokensPerCall = n))} /></Field>
             <Field label="Tokens de salida máx. por llamada"><Num value={L.maxOutputTokensPerCall} step={1000} onChange={(n) => up((d) => void (d.limits.maxOutputTokensPerCall = n))} /></Field>
             <Field label="Rondas completas de debate (1–2)"><Num value={L.maxDebateRounds} min={1} max={2} onChange={(n) => up((d) => void (d.limits.maxDebateRounds = n))} /></Field>

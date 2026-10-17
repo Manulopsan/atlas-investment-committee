@@ -1,5 +1,6 @@
 import { AppSettingsSchema, serverEnv } from "@/lib/config";
 import { getSettings, saveSettings } from "@/lib/db/repo";
+import { claudeLoginAvailable } from "@/lib/llm/subscription";
 import { fail, json, sameOrigin } from "@/lib/api";
 
 export const runtime = "nodejs";
@@ -8,7 +9,7 @@ export const dynamic = "force-dynamic";
 function envStatus() {
   const e = serverEnv();
   // Only booleans leave the server — never the secret values.
-  return { anthropicKeyConfigured: e.anthropicKeyConfigured, secUserAgentConfigured: Boolean(e.secUserAgent), alphaVantageKeyConfigured: e.alphaVantageKeyConfigured };
+  return { claudeLoginAvailable: claudeLoginAvailable(), anthropicKeyConfigured: e.anthropicKeyConfigured, secUserAgentConfigured: Boolean(e.secUserAgent), alphaVantageKeyConfigured: e.alphaVantageKeyConfigured };
 }
 
 export async function GET() {

@@ -4,7 +4,8 @@ import { insertUsage, setTaskProgress } from "../db/repo";
 import { formatZodError, toInputSchema } from "../agents/schemas";
 import { PROFILES } from "../agents/profiles";
 import { ModelRefusalError, type MessageParam, type ModelAdapter, type ToolUnion } from "../llm/adapter";
-import { checkBudget, costOf, COST_BASIS, estimateTokens, priceFor, StopRequestedError } from "../llm/cost";
+import { checkBudget, costOf, COST_BASIS, estimateTokens, priceFor, StopRequestedError, SUBSCRIPTION_COST_BASIS } from "../llm/cost";
+import { recordSubscriptionCall } from "../llm/subscription";
 import type { MarketData } from "../market-data/types";
 import type { AgentRole } from "../types";
 import { runTool, toolDefinitions, webSearchTool } from "./tools";
@@ -82,6 +83,8 @@ export async function runAgentTask<S extends z.ZodType>(spec: AgentTaskSpec<S>, 
       signal: deps.signal,
       meta: { sessionId: spec.sessionId, taskKey: spec.taskKey, role: spec.role, phase: spec.phase, iteration: iter },
     });
+    const callCost = deps.adapter.kind === "scripted" ? 0 : costOf(resp.usage, priceFor(deps.settings, resp.model) ?? priceFor(deps.settings, spec.model));
+    if (deps.adapter.kind === "subscription" && resp.windowUtilization) recordSubscriptionCall(spec.sessionId, resp.windowUtilization, callCost);
     insertUsage(spec.sessionId, {
       taskKey: spec.taskKey,
       ticker: spec.ticker ?? null,
@@ -93,8 +96,8 @@ export async function runAgentTask<S extends z.ZodType>(spec: AgentTaskSpec<S>, 
       outputTokens: resp.usage.output_tokens,
       cacheReadTokens: resp.usage.cache_read_input_tokens,
       cacheWriteTokens: resp.usage.cache_creation_input_tokens,
-      estCostUsd: deps.adapter.kind === "scripted" ? 0 : costOf(resp.usage, priceFor(deps.settings, resp.model) ?? priceFor(deps.settings, spec.model)),
-      costBasis: deps.adapter.kind === "scripted" ? "SIMULADO: adaptador de demostración, sin coste real" : COST_BASIS,
+      estCostUsd: callCost,
+      costBasis: deps.adapter.kind === "scripted" ? "SIMULADO: adaptador de demostración, sin coste real" : deps.adapter.kind === "subscription" ? SUBSCRIPTION_COST_BASIS : COST_BASIS,
       stopReason: resp.stopReason,
       requestId: resp.requestId,
     });

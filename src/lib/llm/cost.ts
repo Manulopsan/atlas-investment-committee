@@ -1,8 +1,10 @@
 import type { AppSettings, ModelPrice } from "../config";
 import { listUsage, usageTotals } from "../db/repo";
 import type { ModelUsage } from "./adapter";
+import { lastSubscriptionStatus } from "./usageWindow";
 
 export const COST_BASIS = "ESTIMADO: tokens reportados por la API × tabla de precios configurada (la facturación real puede diferir)";
+export const SUBSCRIPTION_COST_BASIS = "EQUIVALENTE API: la suscripción de Claude no factura por token; tokens × tabla de precios, solo como referencia";
 
 /** A zero price is treated as "not configured": otherwise the budget could never be enforced. */
 export function priceFor(settings: AppSettings, model: string): ModelPrice | null {
@@ -34,6 +36,20 @@ export class BudgetExceededError extends Error {
   }
 }
 
+/**
+ * The Claude subscription's usage window is exhausted. The session pauses
+ * (PAUSED_LIMIT) instead of ending, and can resume once the window resets.
+ */
+export class SubscriptionLimitError extends BudgetExceededError {
+  constructor(
+    reason: string,
+    public resetsAt: string | null,
+  ) {
+    super(reason);
+    this.name = "SubscriptionLimitError";
+  }
+}
+
 export class StopRequestedError extends Error {
   constructor() {
     super("Proceso detenido por el usuario");
@@ -47,16 +63,24 @@ export class StopRequestedError extends Error {
  * call limit. Non-final phases may only use (1 − reserve) of the budget, so
  * the CIO can always document the outcome after a controlled stop.
  */
+/** Call cap for a session: the API spend limit, or the (much higher) runaway guard on the subscription. */
+export function maxCallsFor(settings: AppSettings): number {
+  // Sessions frozen before this setting existed have no value: fall back to the default.
+  return settings.llmProvider === "subscription" ? (settings.subscriptionMaxCalls ?? 600) : settings.limits.maxCallsPerSession;
+}
+
 export function checkBudget(sessionId: string, settings: AppSettings, req: { model: string; estInputTokens: number; maxOutputTokens: number; isFinal: boolean }) {
   const L = settings.limits;
   const totals = usageTotals(sessionId);
   const reserveCalls = req.isFinal ? 0 : 2;
-  if (totals.calls + 1 > L.maxCallsPerSession - reserveCalls) {
-    throw new BudgetExceededError(`límite de llamadas (${totals.calls}/${L.maxCallsPerSession}${reserveCalls ? `, ${reserveCalls} reservadas para el veredicto` : ""})`);
+  const maxCalls = maxCallsFor(settings);
+  if (totals.calls + 1 > maxCalls - reserveCalls) {
+    throw new BudgetExceededError(`límite de llamadas (${totals.calls}/${maxCalls}${reserveCalls ? `, ${reserveCalls} reservadas para el veredicto` : ""})`);
   }
   if (req.estInputTokens > L.maxInputTokensPerCall) {
     throw new BudgetExceededError(`la llamada excedería el límite de tokens de entrada (${req.estInputTokens} > ${L.maxInputTokensPerCall})`);
   }
+  if (settings.llmProvider === "subscription") return checkSubscriptionWindow(settings, req);
   const p = priceFor(settings, req.model);
   if (!p) throw new BudgetExceededError(`no hay precio configurado para el modelo ${req.model}; configure la tabla de precios`);
   const worst = costOf({ input_tokens: req.estInputTokens, output_tokens: req.maxOutputTokens, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, p)!;
@@ -65,6 +89,21 @@ export function checkBudget(sessionId: string, settings: AppSettings, req: { mod
     throw new BudgetExceededError(
       `gasto estimado ${totals.estCostUsd.toFixed(3)} USD + peor caso de la siguiente llamada ${worst.toFixed(3)} USD > disponible ${available.toFixed(2)} USD${req.isFinal ? "" : " (reserva para el veredicto excluida)"}`,
     );
+  }
+}
+
+/**
+ * Subscription mode: the limit is the plan's 5-hour usage window. Non-final
+ * phases stop a few points earlier so the CIO can still close the session.
+ */
+function checkSubscriptionWindow(settings: AppSettings, req: { isFinal: boolean }) {
+  const st = lastSubscriptionStatus();
+  if (st?.status === "rejected") throw new SubscriptionLimitError("límite de uso de la suscripción de Claude alcanzado", st.fiveHour?.resetsAt ?? null);
+  const used = st?.fiveHour?.utilization;
+  if (used == null) return; // unknown until the first call reports it
+  const stopAt = req.isFinal ? settings.subscriptionStopAtPct : settings.subscriptionStopAtPct - settings.subscriptionFinalReservePct;
+  if (used * 100 >= stopAt) {
+    throw new SubscriptionLimitError(`ventana de 5 h de la suscripción de Claude al ${(used * 100).toFixed(0)} % (tope ${stopAt} %${req.isFinal ? "" : ", reserva para el veredicto excluida"})`, st?.fiveHour?.resetsAt ?? null);
   }
 }
 
@@ -89,7 +128,7 @@ export function usageBreakdown(sessionId: string) {
     byPhase: by((r) => r.phase ?? "—"),
     byCompany: by((r) => r.ticker ?? "varias / general"),
     models: Array.from(new Set(rows.map((r) => r.model))),
-    basis: COST_BASIS,
+    basis: rows.some((r) => r.costBasis === SUBSCRIPTION_COST_BASIS) ? SUBSCRIPTION_COST_BASIS : COST_BASIS,
   };
 }
 
@@ -107,6 +146,25 @@ export interface PlanEstimate {
   maxCalls: number;
   withinBudget: boolean | null;
   warnings: string[];
+  /** Subscription mode only (added by the estimate endpoint): the plan's usage windows. */
+  subscription?: SubscriptionEstimate;
+}
+
+export interface SubscriptionEstimate {
+  loggedIn: boolean;
+  subscriptionType: string | null;
+  /** % of the 5-hour window already used (null = unknown). */
+  fiveHourUsedPct: number | null;
+  fiveHourResetsAt: string | null;
+  sevenDayUsedPct: number | null;
+  sevenDayResetsAt: string | null;
+  stopAtPct: number;
+  /** Expected share of the 5-hour window this session will use (null until calibrated). */
+  estPctOfWindow: number | null;
+  /** Window points per USD of API-equivalent usage, learnt from earlier sessions. */
+  pctPerUsd: number | null;
+  observedPct: number;
+  fitsInWindow: boolean | null;
 }
 
 /** Pre-session estimate. Heuristic, labelled as such; real cost depends on tokens and tool use. */
@@ -139,13 +197,19 @@ export function planEstimate(settings: AppSettings, nCandidates: number): PlanEs
   });
   const totalCalls = out.reduce((a, b) => a + b.calls, 0);
   const cost = out.every((p) => p.estCostUsd !== null) ? out.reduce((a, b) => a + (b.estCostUsd ?? 0), 0) : null;
-  const warnings = [
-    "Estimación aproximada: el coste real depende de los tokens efectivamente usados, del número de llamadas a herramientas y de la caché.",
-    "La aplicación detiene nuevas llamadas antes de superar el presupuesto o el límite de llamadas.",
-  ];
-  if (!priceFor(settings, settings.model) || !priceFor(settings, settings.debateModel)) warnings.push("Falta el precio de algún modelo seleccionado en la tabla de precios: no se puede estimar el coste.");
-  if (totalCalls > L.maxCallsPerSession) warnings.push(`Las llamadas previstas (${totalCalls}) superan el límite (${L.maxCallsPerSession}): el debate se detendrá de forma controlada.`);
-  if (cost !== null && cost > L.maxBudgetUsd) warnings.push(`El coste estimado supera el presupuesto: el debate se detendrá de forma controlada al llegar al límite.`);
+  const sub = settings.llmProvider === "subscription";
+  const warnings = sub
+    ? [
+        "Estimación aproximada: el consumo real depende de los tokens efectivamente usados, del número de llamadas a herramientas y de la caché. Los importes en $ son solo el equivalente de API.",
+        `La aplicación detiene nuevas llamadas al llegar al ${settings.subscriptionStopAtPct} % de la ventana de 5 h o al límite de llamadas.`,
+      ]
+    : [
+        "Estimación aproximada: el coste real depende de los tokens efectivamente usados, del número de llamadas a herramientas y de la caché.",
+        "La aplicación detiene nuevas llamadas antes de superar el presupuesto o el límite de llamadas.",
+      ];
+  if (!priceFor(settings, settings.model) || !priceFor(settings, settings.debateModel)) warnings.push(sub ? "Falta el precio de algún modelo seleccionado: no se puede estimar el % de la ventana." : "Falta el precio de algún modelo seleccionado en la tabla de precios: no se puede estimar el coste.");
+  if (totalCalls > maxCallsFor(settings)) warnings.push(`Las llamadas previstas (${totalCalls}) superan el límite (${maxCallsFor(settings)}): el debate se detendrá de forma controlada.`);
+  if (!sub && cost !== null && cost > L.maxBudgetUsd) warnings.push(`El coste estimado supera el presupuesto: el debate se detendrá de forma controlada al llegar al límite.`);
   return {
     model: settings.model,
     debateModel: settings.debateModel,
@@ -157,8 +221,8 @@ export function planEstimate(settings: AppSettings, nCandidates: number): PlanEs
     totalOutputTokens: out.reduce((a, b) => a + b.outputTokens, 0),
     estCostUsd: cost,
     budgetUsd: L.maxBudgetUsd,
-    maxCalls: L.maxCallsPerSession,
-    withinBudget: cost === null ? null : cost <= L.maxBudgetUsd && totalCalls <= L.maxCallsPerSession,
+    maxCalls: maxCallsFor(settings),
+    withinBudget: sub ? totalCalls <= maxCallsFor(settings) : cost === null ? null : cost <= L.maxBudgetUsd && totalCalls <= L.maxCallsPerSession,
     warnings,
   };
 }

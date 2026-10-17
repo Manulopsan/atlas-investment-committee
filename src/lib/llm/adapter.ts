@@ -29,13 +29,15 @@ export interface ModelResponse {
   usage: ModelUsage;
   model: string;
   requestId: string | null;
+  /** Subscription only: 5-hour window utilization (0-1) seen before and after the call. */
+  windowUtilization?: { before: number | null; after: number | null };
 }
 
-/** Abstraction over the model provider. Live sessions use the Anthropic SDK; demo/tests use a scripted adapter. */
+/** Abstraction over the model provider. Live sessions use the Anthropic API or the Claude subscription (Agent SDK); demo/tests use a scripted adapter. */
 export interface ModelAdapter {
   id: string;
   /** "scripted" responses are synthetic and never count as real analysis. */
-  kind: "anthropic" | "scripted";
+  kind: "anthropic" | "subscription" | "scripted";
   create(req: ModelRequest): Promise<ModelResponse>;
   /** Exact input-token count for a request, when the provider offers it (null = unavailable). */
   countTokens?(req: Pick<ModelRequest, "model" | "system" | "messages" | "tools">): Promise<number | null>;

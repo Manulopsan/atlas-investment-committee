@@ -86,6 +86,21 @@ export const DEFAULT_PRICING: Record<string, ModelPrice> = {
 };
 
 export const AppSettingsSchema = z.object({
+  /**
+   * How live sessions reach Claude. "subscription": the Claude account logged in
+   * to Claude Code on this machine (Claude Agent SDK; consumes the plan's usage
+   * windows, no API bill). "api": ANTHROPIC_API_KEY (pay per token).
+   */
+  llmProvider: z.enum(["subscription", "api"]).default("subscription"),
+  /** Subscription mode: stop new calls when the 5-hour usage window reaches this % (0-100). */
+  subscriptionStopAtPct: z.number().min(10).max(100).default(95),
+  /**
+   * Subscription mode: call cap per session. Only a runaway guard — the real
+   * limit is the usage window (limits.maxCallsPerSession is for API spend).
+   */
+  subscriptionMaxCalls: z.number().int().min(50).max(5000).default(600),
+  /** Subscription mode: points of the window kept for the CIO's final decision. */
+  subscriptionFinalReservePct: z.number().min(0).max(30).default(4),
   /** Main model: initial reports, revisions, CIO decisions. */
   model: z.string().min(1).default("claude-opus-5-5"),
   /** Model for debate turns and verification tasks (the "quality" knob). */
@@ -121,3 +136,4 @@ export function serverEnv() {
     dbPath: process.env.ATLAS_DB_PATH?.trim() || "",
   };
 }
+

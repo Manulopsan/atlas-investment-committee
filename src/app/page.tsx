@@ -9,6 +9,7 @@ import type { AppSettings } from "@/lib/config";
 import { COVERAGE_LABELS } from "@/lib/types";
 
 interface EnvStatus {
+  claudeLoginAvailable: boolean;
   anthropicKeyConfigured: boolean;
   secUserAgentConfigured: boolean;
   alphaVantageKeyConfigured: boolean;
@@ -37,7 +38,11 @@ function StartPanel({ onStarted }: { onStarted: (id: string) => void }) {
       setBusy(false);
     }
   };
-  const keyMissing = cfg && !cfg.env.anthropicKeyConfigured;
+  const sub = cfg?.settings.llmProvider === "subscription";
+  const keyMissing = cfg && (sub ? !cfg.env.claudeLoginAvailable : !cfg.env.anthropicKeyConfigured);
+  const se = est?.subscription;
+  const pct = (n: number | null | undefined) => (n == null ? "n/d" : `${n.toFixed(n < 10 ? 1 : 0)} %`);
+  const at = (iso: string | null | undefined) => (iso ? new Date(iso).toLocaleString("es-ES", { weekday: "short", hour: "2-digit", minute: "2-digit" }) : "—");
   return (
     <Card title="Iniciar comité">
       <div className="grid gap-4 lg:grid-cols-2">
@@ -47,7 +52,13 @@ function StartPanel({ onStarted }: { onStarted: (id: string) => void }) {
             {[
               { v: "demo", t: "Demostración", d: "Datos y agentes SINTÉTICOS claramente etiquetados. Sin coste, sin red. Ejecuta el flujo completo." },
               { v: "dry_run", t: "Análisis en seco", d: "Sin llamadas de IA: comprueba configuración y fuentes (SEC), descubre candidatas y estima el coste." },
-              { v: "live", t: "Comité real", d: "Llamadas de pago a la API de Anthropic con datos públicos reales. Requiere clave y consentimiento." },
+              {
+                v: "live",
+                t: "Comité real",
+                d: sub
+                  ? "Usa su cuenta de Claude (la sesión de Claude Code de este equipo) con datos públicos reales. Consume las ventanas de uso de su plan; se detiene al llegar al tope configurado."
+                  : "Llamadas de pago a la API de Anthropic con datos públicos reales. Requiere clave y consentimiento.",
+              },
             ].map((o) => (
               <label key={o.v} className={`flex cursor-pointer gap-2 rounded-md border p-2.5 ${mode === o.v ? "border-accent bg-accent/10" : "border-line"}`}>
                 <input type="radio" name="mode" checked={mode === o.v} onChange={() => setMode(o.v as typeof mode)} className="mt-1" />
@@ -58,7 +69,12 @@ function StartPanel({ onStarted }: { onStarted: (id: string) => void }) {
               </label>
             ))}
           </fieldset>
-          {mode === "live" && keyMissing && (
+          {mode === "live" && keyMissing && sub && (
+            <Notice tone="serious">
+              No hay sesión de Claude Code iniciada en este equipo. En una terminal ejecute <code>claude</code> y después <code>/login</code> con su cuenta de Claude (o defina <code>CLAUDE_CODE_OAUTH_TOKEN</code> con <code>claude setup-token</code>). Mientras tanto puede usar el modo demostración o el análisis en seco.
+            </Notice>
+          )}
+          {mode === "live" && keyMissing && !sub && (
             <Notice tone="serious">
               No hay <code>ANTHROPIC_API_KEY</code> en el servidor. Cópiela en <code>.env.local</code> (ver <code>.env.example</code>) y reinicie <code>npm run dev</code>. La clave nunca se envía al navegador. Mientras tanto puede usar el modo demostración o el análisis en seco.
             </Notice>
@@ -69,22 +85,44 @@ function StartPanel({ onStarted }: { onStarted: (id: string) => void }) {
           {mode === "live" && (
             <label className="flex items-start gap-2 text-sm">
               <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} className="mt-1" />
-              <span>Entiendo que esta sesión realiza llamadas de pago a la API de Anthropic, que el coste real depende de los tokens y herramientas utilizados, y que la aplicación detendrá nuevas llamadas al alcanzar el presupuesto configurado.</span>
+              <span>
+                {sub
+                  ? `Entiendo que esta sesión consume el uso de mi suscripción de Claude (ventana de 5 horas y semanal), que el consumo real depende de los tokens y herramientas utilizados, y que la aplicación detendrá nuevas llamadas al llegar al ${cfg?.settings.subscriptionStopAtPct ?? 95} % de la ventana de 5 h.`
+                  : "Entiendo que esta sesión realiza llamadas de pago a la API de Anthropic, que el coste real depende de los tokens y herramientas utilizados, y que la aplicación detendrá nuevas llamadas al alcanzar el presupuesto configurado."}
+              </span>
             </label>
           )}
           <Button variant="primary" disabled={busy || (mode === "live" && (!consent || Boolean(keyMissing)))} onClick={start}>
-            {busy ? "Iniciando…" : mode === "live" ? "Iniciar comité (de pago)" : mode === "dry_run" ? "Ejecutar análisis en seco" : "Iniciar demostración"}
+            {busy ? "Iniciando…" : mode === "live" ? (sub ? "Iniciar comité (suscripción de Claude)" : "Iniciar comité (de pago)") : mode === "dry_run" ? "Ejecutar análisis en seco" : "Iniciar demostración"}
           </Button>
           {err && <ErrorBox>{err}</ErrorBox>}
         </div>
         <div>
-          <div className="mb-2 text-xs font-semibold text-ink-2">Estimación previa (modo real) — aproximada</div>
+          <div className="mb-2 text-xs font-semibold text-ink-2">Estimación previa (modo real): uso aproximado</div>
           {est ? (
             <div className="space-y-2 text-sm">
-              <div className="grid grid-cols-2 gap-2">
-                <Stat label="Llamadas aprox." value={fmt.int(est.totalCalls)} sub={`límite ${est.maxCalls}`} />
-                <Stat label="Coste estimado" value={est.estCostUsd === null ? "n/d" : `${est.estCostUsd.toFixed(2)} $`} sub={`presupuesto ${est.budgetUsd} $`} />
-              </div>
+              {se ? (
+                <>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Stat label="Tokens necesarios aprox." value={`${fmt.big(est.totalInputTokens)} in`} sub={`${fmt.big(est.totalOutputTokens)} out · ${fmt.int(est.totalCalls)} llamadas`} />
+                    <Stat
+                      label="% de la ventana de 5 h"
+                      value={se.estPctOfWindow === null ? "sin calibrar" : `≈ ${pct(se.estPctOfWindow)}`}
+                      sub={se.estPctOfWindow === null ? "se calibra con el primer comité" : "estimado con comités anteriores"}
+                    />
+                    <Stat label="Ventana de 5 h usada" value={pct(se.fiveHourUsedPct)} sub={`tope ${se.stopAtPct} % · reinicio ${at(se.fiveHourResetsAt)}`} />
+                    <Stat label="Ventana semanal usada" value={pct(se.sevenDayUsedPct)} sub={`reinicio ${at(se.sevenDayResetsAt)}`} />
+                  </div>
+                  {!se.loggedIn && <p className="text-xs text-ink-2">⚠ No se pudo leer el uso de la suscripción (¿sesión de Claude Code iniciada?).</p>}
+                  {se.fitsInWindow === false && <p className="text-xs text-ink-2">⚠ Con el uso actual, la sesión probablemente llegará al tope antes de terminar: el debate se detendrá de forma controlada y el CIO cerrará con lo disponible.</p>}
+                  {se.estPctOfWindow === null && <p className="text-xs text-ink-2">El % se estima a partir de sesiones anteriores (crecimiento de la ventana por $ equivalente de API). Hasta tener datos solo se muestran los tokens; la ventana se vigila igualmente en cada llamada.</p>}
+                </>
+              ) : (
+                <div className="grid grid-cols-2 gap-2">
+                  <Stat label="Llamadas aprox." value={fmt.int(est.totalCalls)} sub={`límite ${est.maxCalls}`} />
+                  <Stat label="Tokens necesarios aprox." value={`${fmt.big(est.totalInputTokens)} in`} sub={`${fmt.big(est.totalOutputTokens)} out`} />
+                </div>
+              )}
               <div className="text-xs text-ink-2">
                 {est.agents} agentes · modelo principal <code>{est.model}</code> · debate <code>{est.debateModel}</code>
               </div>
@@ -96,7 +134,6 @@ function StartPanel({ onStarted }: { onStarted: (id: string) => void }) {
                       <td className="py-1">{p.phase}</td>
                       <td className="num py-1 text-right">{p.calls} llamadas</td>
                       <td className="num py-1 text-right">{fmt.big(p.inputTokens)} in / {fmt.big(p.outputTokens)} out</td>
-                      <td className="num py-1 text-right">{p.estCostUsd === null ? "n/d" : `${p.estCostUsd.toFixed(2)} $`}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -142,7 +179,7 @@ function Overview() {
                 <Stat label="Controversias abiertas" value={openIssues} sub={`${v.issues.length} incidencias`} />
                 <Stat label="Finalistas" value={v.verdicts.filter((x) => x.rank !== null).length} sub={`${v.verdicts.filter((x) => x.verdict === "POTENTIAL_BUY").length} compras potenciales`} />
                 <Stat label="Tokens" value={fmt.big(v.usage.totals.inputTokens + v.usage.totals.cacheReadTokens + v.usage.totals.cacheWriteTokens + v.usage.totals.outputTokens)} sub={`${v.usage.totals.calls} llamadas`} />
-                <Stat label="Coste estimado" value={`${v.usage.totals.estCostUsd.toFixed(3)} $`} sub={s.mode === "demo" ? "simulado (demo, 0 $)" : "estimación, no factura"} />
+                <Stat label="Llamadas al modelo" value={fmt.int(v.usage.totals.calls)} sub={s.mode === "demo" ? "simuladas (demo)" : "en esta sesión"} />
               </div>
               <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-ink-2">
                 <span>Modo: <Badge tone={s.mode === "demo" ? "demo" : "neutral"}>{s.mode}</Badge></span>
@@ -156,7 +193,11 @@ function Overview() {
                 </ul>
               ) : null}
               {s.status === "DRY_RUN_COMPLETE" && <Notice tone="good">Análisis en seco completado sin llamadas de IA. Revise las candidatas en Research y la estimación de coste.</Notice>}
-              {s.budgetExhausted && <Notice tone="critical">Se alcanzó el presupuesto o el límite de llamadas: el debate se detuvo de forma controlada y los desacuerdos pendientes se documentan en el informe final.</Notice>}
+              {s.budgetExhausted && (
+                <Notice tone="critical">
+                  El debate se detuvo de forma controlada ({v.errors.filter((e) => e.message.startsWith("Presupuesto agotado")).pop()?.message.replace("Presupuesto agotado: ", "") ?? "presupuesto o límite de llamadas"}); los desacuerdos pendientes se documentan en el informe final.
+                </Notice>
+              )}
               <SessionActions v={v} onChange={refresh} />
               <div className="flex flex-wrap gap-3 text-sm">
                 <SessionLink href="/committee" s={sid}>Committee Room →</SessionLink>

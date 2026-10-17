@@ -1,8 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // The SQLite driver (node:sqlite) and the Anthropic SDK only run on the server.
-  serverExternalPackages: ["@anthropic-ai/sdk"],
+  // The SQLite driver (node:sqlite) and the Anthropic SDKs only run on the server (the Agent SDK spawns Claude Code).
+  serverExternalPackages: ["@anthropic-ai/sdk", "@anthropic-ai/claude-agent-sdk"],
   poweredByHeader: false,
   async headers() {
     return [

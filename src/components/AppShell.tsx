@@ -5,6 +5,7 @@ import { Suspense, useEffect, useState, type ReactNode } from "react";
 import { api, useSelectedSession } from "./hooks";
 import type { SessionSummary } from "./types";
 import { Badge, StatusBadge } from "./ui";
+import { clock, SubscriptionMeter } from "./subscription";
 
 const NAV = [
   { href: "/", label: "Overview", key: "A" },
@@ -62,6 +63,8 @@ function ShellInner({ children }: { children: ReactNode }) {
     };
   }, []);
   const current = sessions.find((s) => s.id === sid);
+  // A live committee that is working or waiting for the usage window, but is not the one on screen.
+  const elsewhere = sessions.find((s) => s.id !== sid && s.mode === "live" && (s.running || s.queued || s.status === "PAUSED_LIMIT"));
   return (
     <div className="flex min-h-screen flex-col md:flex-row">
       <aside className="border-b border-line bg-surface-1 md:sticky md:top-0 md:h-screen md:w-56 md:shrink-0 md:border-b-0 md:border-r">
@@ -101,10 +104,24 @@ function ShellInner({ children }: { children: ReactNode }) {
           {current?.running && <Badge tone="accent">en ejecución</Badge>}
           {current?.queued && <Badge tone="accent">en cola (worker)</Badge>}
           {current?.interrupted && <Badge tone="serious">interrumpida — reanudable</Badge>}
-          <div className="ml-auto">
+          {current?.status === "PAUSED_LIMIT" && (
+            <Badge tone="warning">
+              pausada por límite de Claude{current.limitPause?.autoResume ? ` — se reanuda tras las ${clock(current.limitPause.resetsAt)}` : " — reanudación manual"}
+            </Badge>
+          )}
+          <div className="ml-auto flex flex-wrap items-center gap-3">
+            <SubscriptionMeter />
             <ThemeToggle />
           </div>
         </header>
+        {elsewhere && (
+          <div className="border-b border-accent/40 bg-accent/10 px-4 py-1.5 text-xs text-ink">
+            ▶ Hay un comité real {elsewhere.running ? "en ejecución" : elsewhere.queued ? "en cola" : "pausado por el límite de Claude"} ({elsewhere.id.slice(0, 8)}).{" "}
+            <Link href={`/committee?s=${elsewhere.id}`} className="font-semibold underline">
+              Ver su estado
+            </Link>
+          </div>
+        )}
         {current?.mode === "demo" && (
           <div className="border-b border-demo/50 bg-demo/15 px-4 py-1.5 text-xs text-ink">
             ◆ Sesión de DEMOSTRACIÓN: empresas, datos y opiniones de agentes son SINTÉTICOS (tickers DEMO-*). No son datos reales ni recomendaciones.
